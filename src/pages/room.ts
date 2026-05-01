@@ -35,22 +35,34 @@ type Lease = {
   notes?: string;
 };
 
+type Monitor = {
+  label: string;
+  ip?: string;
+};
+
 type Room = {
   id: string;
   label: string;
-  channelLabels?: Record<number, string>;
+  monitors?: Record<string, Monitor>;
   leases: Lease[];
+};
+
+type Usage = {
+  from: string;
+  to: string;
+  energyKWh: number;
+  monitors: Record<string, number>;
 };
 
 type UsageResp = {
   room: Room;
   currentLease: Lease | null;
-  leaseUsage: { from: string; to: string; energyKWh: number; channels: Record<number, number> };
-  monthUsage: { from: string; to: string; energyKWh: number; channels: Record<number, number> };
+  leaseUsage: Usage;
+  monthUsage: Usage;
   latest: {
     ts: string;
     powerW: number;
-    channels: Array<{ idx: number; powerW: number; totalEnergyWh: number }>;
+    monitors: Record<string, { ts: string; powerW: number; totalEnergyWh: number }>;
   } | null;
 };
 
@@ -86,33 +98,83 @@ function renderHeader(data: UsageResp): void {
   document.title = `5214 · ${data.room.label}`;
 
   const lease = data.currentLease;
-  const sub = lease
+  const leaseLine = lease
     ? `${escapeHtml(lease.tenant)} · lease started ${lease.startDate}`
     : `<span class="muted">no active lease</span>`;
-  document.getElementById("roomSubtitle")!.innerHTML = sub;
+
+  // Each monitor with a known IP becomes a clickable link to its admin UI.
+  // Shown unconditionally so even single-monitor rooms get the click-through.
+  const monitors = data.room.monitors ?? {};
+  const devicePieces = Object.keys(monitors)
+    .sort()
+    .map((id) => {
+      const m = monitors[id]!;
+      const label = escapeHtml(m.label || id);
+      if (!m.ip) return label;
+      const ip = escapeHtml(m.ip);
+      return `<a href="http://${ip}" target="_blank" rel="noopener" title="Shelly admin · ${ip}">${label}</a>`;
+    });
+  const devicesLine = devicePieces.length
+    ? `<span class="muted">devices:</span> ${devicePieces.join(" · ")}`
+    : "";
+
+  document.getElementById("roomSubtitle")!.innerHTML = devicesLine
+    ? `${leaseLine}<br>${devicesLine}`
+    : leaseLine;
+}
+
+function monitorLabel(room: Room, id: string): string {
+  return room.monitors?.[id]?.label ?? id;
+}
+
+/**
+ * Render a monitor's label, wrapping it in an `<a>` to the device's admin UI
+ * when we know its LAN IP. The link only resolves while the viewer is on the
+ * same network as the Shelly, but that's fine — managing the device is a
+ * lan-side activity anyway.
+ */
+function monitorLabelHtml(room: Room, id: string): string {
+  const safeLabel = escapeHtml(monitorLabel(room, id));
+  const ip = room.monitors?.[id]?.ip;
+  if (!ip) return safeLabel;
+  return `<a href="http://${escapeHtml(ip)}" target="_blank" rel="noopener" title="Open ${escapeHtml(ip)} (Shelly admin)">${safeLabel}</a>`;
 }
 
 function renderStats(data: UsageResp): void {
   const latest = data.latest;
   const cls = freshnessClass(latest?.ts ?? null);
 
-  const channelBreakdown = (data.monthUsage.channels &&
-    Object.keys(data.monthUsage.channels).length > 1)
-    ? Object.entries(data.monthUsage.channels)
-        .sort(([a], [b]) => Number(a) - Number(b))
-        .map(([idx, kwh]) => {
-          const label = data.room.channelLabels?.[Number(idx)] ?? `Ch ${idx}`;
-          return `<span class="muted">${escapeHtml(label)}:</span> ${fmtKWh(kwh)}`;
-        })
-        .join(" · ")
-    : "";
+  // Per-monitor breakdowns only add value once a room has more than one feed.
+  const monthIds = Object.keys(data.monthUsage.monitors);
+  const monthBreakdown =
+    monthIds.length > 1
+      ? monthIds
+          .sort()
+          .map((id) => {
+            const kwh = data.monthUsage.monitors[id] ?? 0;
+            return `<span class="muted">${monitorLabelHtml(data.room, id)}:</span> ${fmtKWh(kwh)}`;
+          })
+          .join(" · ")
+      : "";
+
+  const liveIds = latest ? Object.keys(latest.monitors) : [];
+  const liveBreakdown =
+    latest && liveIds.length > 1
+      ? liveIds
+          .sort()
+          .map((id) => {
+            const m = latest.monitors[id]!;
+            return `<span class="muted">${monitorLabelHtml(data.room, id)}:</span> ${fmtW(m.powerW)}`;
+          })
+          .join(" · ")
+      : "";
 
   const el = document.getElementById("stats")!;
   el.innerHTML = `
     <div class="card">
       <div class="label">This month</div>
       <div class="value tabular">${fmtKWh(data.monthUsage.energyKWh)}<span class="unit">kWh</span></div>
-      <div class="sub">${channelBreakdown || "&nbsp;"}</div>
+      <div class="sub">${monthBreakdown || "&nbsp;"}</div>
     </div>
     <div class="card">
       <div class="label">Lease to date</div>
@@ -126,7 +188,10 @@ function renderStats(data: UsageResp): void {
     <div class="card">
       <div class="label">Right now</div>
       <div class="value tabular">${fmtW(latest?.powerW ?? null)}</div>
-      <div class="sub"><span class="dot ${cls}"></span>${fmtRelativeTime(latest?.ts ?? null)}</div>
+      <div class="sub">
+        <span class="dot ${cls}"></span>${fmtRelativeTime(latest?.ts ?? null)}
+        ${liveBreakdown ? `<div style="margin-top:4px;">${liveBreakdown}</div>` : ""}
+      </div>
     </div>
   `;
 }

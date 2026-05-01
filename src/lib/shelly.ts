@@ -1,7 +1,5 @@
-import type { ChannelReading } from "./types.ts";
-
 /**
- * Normalize a Shelly EM payload into a flat list of channel readings.
+ * Normalize a Shelly EM payload into a flat (power, energy) tuple.
  *
  * Shelly EM Mini / Pro EM / Pro 3EM devices can deliver data in several flavors:
  *
@@ -21,18 +19,49 @@ import type { ChannelReading } from "./types.ts";
  *    which has the same `em1:N` / `em1data:N` keys at the top level.
  *
  * 3. Legacy "Action URL" GET with query params, e.g.
- *      /api/ingest/301?total_act_energy=12345&act_power=120&channel=0
+ *      /api/ingest/301/south?total_act_energy=12345&act_power=120
  *    This is what older firmwares post when set up via the "URL action" UI.
  *
- * We accept any of those and return a normalized struct. Unknown shapes still
- * produce an empty channel list — the caller is responsible for storing the
- * raw body so nothing is lost.
+ * Multi-channel devices (Pro EM, Pro 3EM) report several `em1:N` keys per
+ * payload. Since we treat one Shelly = one monitor, we sum the channels into
+ * a single tuple. For an EM Mini Gen4 (the supported case) that's a sum of
+ * one. If you want per-channel attribution from a multi-channel device, run
+ * one Shelly script per channel with its own `MONITOR_ID`.
  */
 
 export type Normalized = {
   ts: string;
-  channels: ChannelReading[];
+  /** Sum of `act_power` across all reported channels, in watts. */
+  powerW: number;
+  /** Sum of `total_act_energy` across all reported channels, in watt-hours. */
+  totalEnergyWh: number;
+  /** True if any recognizable em*-shaped fields were found in the payload. */
+  hasReading: boolean;
+  /** LAN IP the device self-reported (from `wifi.sta_ip`), if any. */
+  ip?: string;
 };
+
+/** IPv4 dotted-quad sanity check. We don't care about exact validity — just
+ *  that what came in over the wire is plausible enough to put behind an
+ *  `<a href="http://...">`. Trims trailing whitespace, rejects anything else. */
+function plausibleIp(v: unknown): string | undefined {
+  if (typeof v !== "string") return undefined;
+  const s = v.trim();
+  if (!/^\d{1,3}(?:\.\d{1,3}){3}$/.test(s)) return undefined;
+  return s;
+}
+
+function ipFromBody(body: unknown): string | undefined {
+  if (!body || typeof body !== "object") return undefined;
+  const b = body as Record<string, unknown>;
+  // Prefer params.wifi.sta_ip (NotifyStatus shape), fall back to top-level.
+  const params = b["params"] as Record<string, unknown> | undefined;
+  const wifi =
+    (params?.["wifi"] as Record<string, unknown> | undefined) ??
+    (b["wifi"] as Record<string, unknown> | undefined);
+  if (!wifi) return undefined;
+  return plausibleIp(wifi["sta_ip"]);
+}
 
 function num(v: unknown): number | undefined {
   if (typeof v === "number" && Number.isFinite(v)) return v;
@@ -57,48 +86,48 @@ function tsFromBody(body: unknown): string {
   return new Date().toISOString();
 }
 
-function extractFromKeyed(obj: Record<string, unknown>): ChannelReading[] {
-  // Look for em1:N (instantaneous) and em1data:N (cumulative). Also accept
-  // em:N variants used by Pro EM (3-phase) where channels are phases.
-  const channels = new Map<number, ChannelReading>();
+type Acc = { powerW: number; totalEnergyWh: number; seen: boolean };
 
+function accumulateKeyed(obj: Record<string, unknown>, acc: Acc): void {
+  // em1:N (instantaneous, single-phase per-channel), em1data:N (cumulative),
+  // em:N (Pro 3EM 3-phase aggregate), emdata:N (its cumulative companion).
   for (const [key, val] of Object.entries(obj)) {
     if (!val || typeof val !== "object") continue;
     const m = /^em(?:1)?(data)?:(\d+)$/.exec(key);
     if (!m) continue;
     const isData = m[1] === "data";
-    const idx = Number(m[2]);
     const v = val as Record<string, unknown>;
-
-    const existing: ChannelReading = channels.get(idx) ?? {
-      idx,
-      powerW: 0,
-      totalEnergyWh: 0,
-    };
 
     if (isData) {
       const total =
         num(v["total_act_energy"]) ??
         num(v["total_energy"]) ??
         num(v["aenergy"]);
-      if (total !== undefined) existing.totalEnergyWh = total;
+      if (total !== undefined) {
+        acc.totalEnergyWh += total;
+        acc.seen = true;
+      }
     } else {
       const power = num(v["act_power"]) ?? num(v["power"]);
-      if (power !== undefined) existing.powerW = power;
-      // Some firmwares put the cumulative counter alongside instantaneous.
+      if (power !== undefined) {
+        acc.powerW += power;
+        acc.seen = true;
+      }
+      // Some firmwares put the cumulative counter alongside instantaneous;
+      // only pull it from here if there's no companion em*data:N (rare).
       const total =
         num(v["total_act_energy"]) ??
         num(v["total_energy"]) ??
         num(v["aenergy"]);
-      if (total !== undefined && existing.totalEnergyWh === 0) {
-        existing.totalEnergyWh = total;
+      const companionKey = key.replace(/^em(1)?:/, (_, one) =>
+        one ? "em1data:" : "emdata:",
+      );
+      if (total !== undefined && !(companionKey in obj)) {
+        acc.totalEnergyWh += total;
+        acc.seen = true;
       }
     }
-
-    channels.set(idx, existing);
   }
-
-  return [...channels.values()].sort((a, b) => a.idx - b.idx);
 }
 
 export function normalizeShelly(
@@ -106,29 +135,33 @@ export function normalizeShelly(
   query: URLSearchParams,
 ): Normalized {
   const ts = tsFromBody(body);
-  let channels: ChannelReading[] = [];
+  const acc: Acc = { powerW: 0, totalEnergyWh: 0, seen: false };
 
   if (body && typeof body === "object") {
     const b = body as Record<string, unknown>;
     const params = (b["params"] as Record<string, unknown> | undefined) ?? b;
-    channels = extractFromKeyed(params);
+    accumulateKeyed(params, acc);
   }
 
-  if (channels.length === 0) {
+  if (!acc.seen) {
     // Legacy GET-style action URL.
     const total = num(query.get("total_act_energy") ?? query.get("total_energy"));
     const power = num(query.get("act_power") ?? query.get("power"));
-    const idx = num(query.get("channel")) ?? 0;
-    if (total !== undefined || power !== undefined) {
-      channels = [
-        {
-          idx,
-          powerW: power ?? 0,
-          totalEnergyWh: total ?? 0,
-        },
-      ];
+    if (total !== undefined) {
+      acc.totalEnergyWh = total;
+      acc.seen = true;
+    }
+    if (power !== undefined) {
+      acc.powerW = power;
+      acc.seen = true;
     }
   }
 
-  return { ts, channels };
+  return {
+    ts,
+    powerW: acc.powerW,
+    totalEnergyWh: acc.totalEnergyWh,
+    hasReading: acc.seen,
+    ip: ipFromBody(body),
+  };
 }

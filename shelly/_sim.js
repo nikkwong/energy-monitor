@@ -2,15 +2,15 @@
 // For testing only; NOT shipped to the device.
 //
 // Usage:
-//   bun run sim                         # one tick per active room, then exit
+//   bun run sim                         # one tick per active (room, monitor), then exit
 //   bun run sim --watch                 # continuous, every 10s
 //   bun run sim --watch --interval 5    # continuous, every 5s
-//   bun run sim --room 301              # only one room
+//   bun run sim --room 301              # only one room (all its monitors)
 //   bun run sim --base http://host:3000 # custom server URL
 //
-// Each room's "load profile" is randomized but stable across ticks so the
-// dashboard chart looks plausible. Energy counters increment realistically
-// based on power × elapsed time.
+// Each (room, monitor) pair gets its own randomized "load profile" stable
+// across ticks so the dashboard chart looks plausible. Energy counters
+// increment realistically based on power × elapsed time.
 
 const args = parseArgs(process.argv.slice(2));
 const BASE_URL = args.base ?? "http://localhost:3000";
@@ -33,20 +33,25 @@ function parseArgs(argv) {
   return out;
 }
 
-// Per-room state held across ticks so the cumulative counter increases monotonically.
+// Per-(room, monitor) state held across ticks so the cumulative counter
+// increases monotonically.
 const state = new Map();
 
-function getState(roomId) {
-  let s = state.get(roomId);
+function getState(roomId, monitorId) {
+  const key = `${roomId}|${monitorId}`;
+  let s = state.get(key);
   if (!s) {
     s = {
-      // Seed each room with a random "typical load" so the chart has variety.
+      // Seed each monitor with a random "typical load" so the chart has variety.
       basePowerW: 80 + Math.floor(Math.random() * 250),
       jitterW: 30 + Math.floor(Math.random() * 50),
       totalEnergyWh: 1000 + Math.floor(Math.random() * 50000),
       lastTick: Date.now(),
+      // Stable per-key fake LAN IP so each simulated device gets its own
+      // click-through link in the dashboard.
+      stationIp: `192.168.42.${10 + (state.size % 240)}`,
     };
-    state.set(roomId, s);
+    state.set(key, s);
   }
   return s;
 }
@@ -65,6 +70,9 @@ function pickEmFields(status) {
   const out = {};
   if (status && status.sys && typeof status.sys.unixtime === "number") {
     out.ts = status.sys.unixtime;
+  }
+  if (status && status.wifi && typeof status.wifi.sta_ip === "string") {
+    out.wifi = { sta_ip: status.wifi.sta_ip };
   }
   for (const k in status) {
     if (isEmKey(k)) out[k] = status[k];
@@ -95,61 +103,86 @@ function fakeStatus(s) {
       total_act_energy: s.totalEnergyWh,
       total_act_ret_energy: 0,
     },
-    wifi: { sta_ip: "192.168.1.42" },
+    wifi: { sta_ip: s.stationIp },
   };
 }
 
-async function postOnce(roomId) {
-  const s = getState(roomId);
+async function postOnce(roomId, monitorId) {
+  const s = getState(roomId, monitorId);
   const status = fakeStatus(s);
   const body = JSON.stringify({
     method: "NotifyStatus",
     params: pickEmFields(status),
   });
-  const r = await fetch(`${BASE_URL}/api/ingest/${roomId}`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body,
-  });
+  const r = await fetch(
+    `${BASE_URL}/api/ingest/${roomId}/${monitorId}`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body,
+    },
+  );
   const txt = await r.text();
   const stamp = new Date().toLocaleTimeString();
   const w = status["em1:0"].act_power.toFixed(0);
   const wh = status["em1data:0"].total_act_energy.toFixed(0);
+  const path = `${roomId}/${monitorId}`;
   console.log(
-    `[${stamp}] room=${roomId.padEnd(5)} ${w.padStart(4)}W  total=${wh}Wh  -> ${r.status} ${txt}`,
+    `[${stamp}] ${path.padEnd(18)} ${w.padStart(4)}W  total=${wh}Wh  -> ${r.status} ${txt}`,
   );
 }
 
-async function discoverRooms() {
+/**
+ * Pull room ids and their monitor lists from the running server.
+ * Falls back to monitor=`default` for any room without an explicit list,
+ * matching the server's implicit-default behavior.
+ */
+async function discoverTargets() {
   const r = await fetch(`${BASE_URL}/api/rooms`);
   if (!r.ok) throw new Error(`GET /api/rooms failed: ${r.status}`);
   const { rooms } = await r.json();
-  return rooms.map((x) => x.id);
+  const targets = [];
+  for (const room of rooms) {
+    const monitors =
+      Array.isArray(room.monitors) && room.monitors.length > 0
+        ? room.monitors
+        : ["default"];
+    for (const m of monitors) targets.push([room.id, m]);
+  }
+  return targets;
 }
 
-async function tick(roomIds) {
-  await Promise.all(roomIds.map(postOnce));
+async function tick(targets) {
+  await Promise.all(targets.map(([r, m]) => postOnce(r, m)));
 }
 
 async function main() {
-  let roomIds;
+  let targets;
   if (ROOM_FILTER) {
-    roomIds = [ROOM_FILTER];
+    // Without /api/rooms we don't know the monitor list; ping every monitor
+    // declared on that room by hitting /api/rooms first and filtering.
+    const all = await discoverTargets();
+    targets = all.filter(([r]) => r === ROOM_FILTER);
+    if (targets.length === 0) {
+      console.error(`no monitors for room "${ROOM_FILTER}" — check data/rooms.json`);
+      process.exit(1);
+    }
   } else {
-    roomIds = await discoverRooms();
-    if (roomIds.length === 0) {
+    targets = await discoverTargets();
+    if (targets.length === 0) {
       console.error("no rooms in data/rooms.json — add one and retry");
       process.exit(1);
     }
   }
+  const summary = targets.map(([r, m]) => `${r}/${m}`).join(", ");
   console.log(
-    `simulating ${roomIds.length} room(s) [${roomIds.join(", ")}] -> ${BASE_URL}` +
+    `simulating ${targets.length} monitor(s) [${summary}] -> ${BASE_URL}` +
       (WATCH ? `  every ${INTERVAL_MS / 1000}s` : "  (single tick)"),
   );
-  await tick(roomIds);
+  await tick(targets);
   if (!WATCH) return;
   setInterval(() => {
-    tick(roomIds).catch((e) => console.error("tick failed:", e.message));
+    tick(targets).catch((e) => console.error("tick failed:", e.message));
   }, INTERVAL_MS);
 }
 

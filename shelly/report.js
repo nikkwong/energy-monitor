@@ -10,6 +10,10 @@
 //
 // What to edit:
 //   * CONFIG.ROOM_ID    — the room this device meters (must match data/rooms.json)
+//   * CONFIG.MONITOR_ID — which feed within the room this device is on, e.g.
+//                         "south", "north", "in-bathroom". Must match a key
+//                         under the room's `monitors` in data/rooms.json.
+//                         Use "default" for single-monitor rooms.
 //   * CONFIG.BASE_URL   — your dashboard's public URL, no trailing slash
 //   * CONFIG.INTERVAL_S — how often to POST (seconds)
 //   * CONFIG.SSL_CA     — set to "*" only if your server uses a self-signed cert
@@ -18,7 +22,8 @@
 
 let CONFIG = {
   ROOM_ID: "301",
-  BASE_URL: "https://5214.example.com",
+  MONITOR_ID: "default",
+  BASE_URL: "http://34.69.79.104:3000",
   INTERVAL_S: 60,
   SSL_CA: null,
 };
@@ -37,8 +42,15 @@ function pickEmFields(status) {
   if (status && status.sys && typeof status.sys.unixtime === "number") {
     out.ts = status.sys.unixtime;
   }
-  // Forward every channel-shaped key. Covers EM1 (single-phase, per-channel),
-  // EM (3-phase aggregates), and their *data variants for cumulative energy.
+  // Forward the wifi block too — the server pulls `wifi.sta_ip` out of it
+  // and stores it on the monitor entry in rooms.json so the dashboard can
+  // render a click-through link to this device's admin UI.
+  if (status && status.wifi && typeof status.wifi.sta_ip === "string") {
+    out.wifi = { sta_ip: status.wifi.sta_ip };
+  }
+  // Forward every channel-shaped key. Server collapses them into a single
+  // (power, energy) tuple per monitor, so multi-channel devices end up
+  // summed; for an EM Mini Gen4 this is just em1:0 + em1data:0.
   for (let k in status) {
     if (isEmKey(k)) out[k] = status[k];
   }
@@ -79,7 +91,12 @@ function postReport() {
       params: pickEmFields(status),
     });
     let req = {
-      url: CONFIG.BASE_URL + "/api/ingest/" + CONFIG.ROOM_ID,
+      url:
+        CONFIG.BASE_URL +
+        "/api/ingest/" +
+        CONFIG.ROOM_ID +
+        "/" +
+        CONFIG.MONITOR_ID,
       body: body,
       content_type: "application/json",
       timeout: 10,
@@ -103,6 +120,11 @@ function postReport() {
 }
 
 Timer.set(CONFIG.INTERVAL_S * 1000, true, postReport);
-print("5214 reporter running:", CONFIG.ROOM_ID, "->", CONFIG.BASE_URL);
+print(
+  "5214 reporter running:",
+  CONFIG.ROOM_ID + "/" + CONFIG.MONITOR_ID,
+  "->",
+  CONFIG.BASE_URL,
+);
 probeKeysOnce();
 postReport();

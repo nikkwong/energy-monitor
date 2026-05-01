@@ -1,7 +1,7 @@
 import index from "./pages/index.html";
 import room from "./pages/room.html";
 
-import { appendReading, readRooms } from "./lib/data.ts";
+import { appendReading, ensureRoomAndMonitor, readRooms } from "./lib/data.ts";
 import { normalizeShelly } from "./lib/shelly.ts";
 import {
   computeSeries,
@@ -9,10 +9,12 @@ import {
   latestReading,
   type Bucket,
 } from "./lib/aggregate.ts";
-import type { Reading } from "./lib/types.ts";
+import type { Reading, Room } from "./lib/types.ts";
 
 const PORT = Number(process.env.PORT ?? 3000);
 const ROOM_ID_RE = /^[A-Za-z0-9_-]{1,16}$/;
+const MONITOR_ID_RE = /^[A-Za-z0-9_-]{1,16}$/;
+const DEFAULT_MONITOR_ID = "default";
 
 function badRequest(msg: string): Response {
   return Response.json({ error: msg }, { status: 400 });
@@ -29,6 +31,13 @@ function parseBucket(v: string | null): Bucket {
   return "day";
 }
 
+function monitorList(r: Room): string[] {
+  if (r.monitors && Object.keys(r.monitors).length > 0) {
+    return Object.keys(r.monitors);
+  }
+  return [DEFAULT_MONITOR_ID];
+}
+
 const server = Bun.serve({
   port: PORT,
   development: process.env.NODE_ENV !== "production",
@@ -40,6 +49,16 @@ const server = Bun.serve({
 
     "/api/health": () =>
       Response.json({ ok: true, ts: new Date().toISOString() }),
+
+    // Raw `data/rooms.json` for at-a-glance audit (auto-registered entries,
+    // typo'd monitor names, lease history). Pretty-printed via the same
+    // serialization the on-disk file uses, so what you see is what's saved.
+    "/api/config/rooms": async () => {
+      const cfg = await readRooms();
+      return new Response(JSON.stringify(cfg, null, 2) + "\n", {
+        headers: { "content-type": "application/json; charset=utf-8" },
+      });
+    },
 
     "/api/rooms": async () => {
       const cfg = await readRooms();
@@ -69,6 +88,7 @@ const server = Bun.serve({
             monthKWh: monthUsage.energyKWh,
             powerW: latest?.powerW ?? null,
             lastSeen: latest?.ts ?? null,
+            monitors: monitorList(r),
           };
         }),
       );
@@ -126,55 +146,18 @@ const server = Bun.serve({
       return Response.json({ from: from.toISOString(), to: to.toISOString(), bucket, series });
     },
 
-    "/api/ingest/:roomId": {
-      // Modern Shelly NotifyStatus / outbound webhook.
-      POST: async (req) => {
-        const { roomId } = req.params;
-        if (!ROOM_ID_RE.test(roomId)) return badRequest("invalid roomId");
-        const cfg = await readRooms();
-        if (!cfg.rooms[roomId]) {
-          return Response.json({ error: "unknown room" }, { status: 404 });
-        }
-        let body: unknown = null;
-        try {
-          body = await req.json();
-        } catch {
-          // Non-JSON body — try text + querystring fallback.
-          body = null;
-        }
-        const url = new URL(req.url);
-        const norm = normalizeShelly(body, url.searchParams);
-        const reading: Reading = {
-          ts: norm.ts,
-          room: roomId,
-          channels: norm.channels,
-          raw: body ?? undefined,
-        };
-        await appendReading(reading);
-        return Response.json({ ok: true, channels: norm.channels.length });
-      },
+    // Multi-monitor ingest. Each physical Shelly in a room POSTs to its own
+    // monitor path so per-device cumulative counters don't trample each other.
+    "/api/ingest/:roomId/:monitorId": {
+      POST: (req) => ingest(req, req.params.roomId, req.params.monitorId, "POST"),
+      GET: (req) => ingest(req, req.params.roomId, req.params.monitorId, "GET"),
+    },
 
-      // Legacy Shelly Action URL: GET /api/ingest/301?total_act_energy=…&act_power=…&channel=0
-      GET: async (req) => {
-        const { roomId } = req.params;
-        if (!ROOM_ID_RE.test(roomId)) return badRequest("invalid roomId");
-        const cfg = await readRooms();
-        if (!cfg.rooms[roomId]) {
-          return Response.json({ error: "unknown room" }, { status: 404 });
-        }
-        const url = new URL(req.url);
-        const norm = normalizeShelly(null, url.searchParams);
-        if (norm.channels.length === 0) {
-          return badRequest("no recognizable Shelly fields");
-        }
-        await appendReading({
-          ts: norm.ts,
-          room: roomId,
-          channels: norm.channels,
-          raw: Object.fromEntries(url.searchParams),
-        });
-        return Response.json({ ok: true });
-      },
+    // Single-monitor shorthand: equivalent to /api/ingest/:roomId/default.
+    // Old Shelly devices that haven't been re-flashed with MONITOR_ID still work.
+    "/api/ingest/:roomId": {
+      POST: (req) => ingest(req, req.params.roomId, DEFAULT_MONITOR_ID, "POST"),
+      GET: (req) => ingest(req, req.params.roomId, DEFAULT_MONITOR_ID, "GET"),
     },
 
     // Single-segment paths render the room page; the client reads the path
@@ -187,5 +170,58 @@ const server = Bun.serve({
     return new Response("internal error", { status: 500 });
   },
 });
+
+async function ingest(
+  req: Request,
+  roomId: string,
+  monitorId: string,
+  method: "POST" | "GET",
+): Promise<Response> {
+  if (!ROOM_ID_RE.test(roomId)) return badRequest("invalid roomId");
+  if (!MONITOR_ID_RE.test(monitorId)) return badRequest("invalid monitorId");
+
+  let body: unknown = null;
+  if (method === "POST") {
+    try {
+      body = await req.json();
+    } catch {
+      // Non-JSON body — we'll fall through to the querystring extractor below.
+    }
+  }
+
+  const url = new URL(req.url);
+  const norm = normalizeShelly(body, url.searchParams);
+
+  if (!norm.hasReading) {
+    return badRequest("no recognizable Shelly fields");
+  }
+
+  // Auto-register: the Shelly is the source of truth for "what (room, monitor)
+  // pairs exist". Operators add lease history and friendly labels by editing
+  // rooms.json after the fact — those edits stick because this only fills in
+  // missing entries. The device's self-reported LAN IP is *also* refreshed
+  // here on every POST so dashboard links follow DHCP renewals.
+  const { newRoom, newMonitor } = await ensureRoomAndMonitor(
+    roomId,
+    monitorId,
+    norm.ip ? { ip: norm.ip } : undefined,
+  );
+  if (newRoom || newMonitor) {
+    const what = newRoom ? "room+monitor" : "monitor";
+    const tail = norm.ip ? ` (ip ${norm.ip})` : "";
+    console.log(`auto-registered ${what} ${roomId}/${monitorId}${tail}`);
+  }
+
+  const reading: Reading = {
+    ts: norm.ts,
+    room: roomId,
+    monitor: monitorId,
+    powerW: norm.powerW,
+    totalEnergyWh: norm.totalEnergyWh,
+    raw: body ?? Object.fromEntries(url.searchParams),
+  };
+  await appendReading(reading);
+  return Response.json({ ok: true });
+}
 
 console.log(`5214 dashboard listening on http://${server.hostname}:${server.port}`);

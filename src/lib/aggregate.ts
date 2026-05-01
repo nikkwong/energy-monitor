@@ -14,16 +14,16 @@ export type UsageSummary = {
   from: string;
   to: string;
   energyKWh: number;
-  /** kWh per channel index. */
-  channels: Record<number, number>;
+  /** kWh per monitor id within the room (empty when aggregating across rooms). */
+  monitors: Record<string, number>;
 };
 
 export type LatestReading = {
   ts: string;
-  /** Sum of instantaneous power across all channels, in watts. */
+  /** Sum of instantaneous power across every monitor in the room, in watts. */
   powerW: number;
-  /** Per-channel snapshot. */
-  channels: Array<{ idx: number; powerW: number; totalEnergyWh: number }>;
+  /** Per-monitor snapshot, keyed by monitor id. */
+  monitors: Record<string, { ts: string; powerW: number; totalEnergyWh: number }>;
 };
 
 function bucketStartUTC(d: Date, bucket: Bucket): Date {
@@ -55,9 +55,10 @@ async function loadSorted(room?: string): Promise<Reading[]> {
 }
 
 /**
- * Compute kWh consumed in [from, to) by walking the cumulative-energy counter
- * delta on each channel. We trust the meter's monotonic counter and ignore
- * negative deltas (which would indicate a meter reset or out-of-order report).
+ * Compute kWh consumed in [from, to) by walking each monitor's cumulative
+ * counter. Deltas are computed per `(room, monitor)` so two devices in the
+ * same room don't trample each other's counters. Negative deltas (would
+ * indicate a meter reset or out-of-order report) are ignored.
  *
  * The delta from reading N-1 -> N is attributed to N's timestamp. That's a
  * standard convention and lines up with how the meter "reports" newly-accrued
@@ -69,26 +70,26 @@ export async function computeUsage(opts: {
   to: Date;
 }): Promise<UsageSummary> {
   const readings = await loadSorted(opts.room);
-  const last: Map<string, number> = new Map(); // key: room|ch
-  const channels: Record<number, number> = {};
+  const last: Map<string, number> = new Map(); // key: room|monitor
+  const monitors: Record<string, number> = {};
   let totalKWh = 0;
 
   const fromMs = opts.from.getTime();
   const toMs = opts.to.getTime();
 
   for (const r of readings) {
+    const key = `${r.room}|${r.monitor}`;
+    const prev = last.get(key);
+    last.set(key, r.totalEnergyWh);
+    if (prev === undefined) continue;
+    const delta = r.totalEnergyWh - prev;
+    if (delta <= 0) continue;
     const tsMs = new Date(r.ts).getTime();
-    for (const ch of r.channels) {
-      const key = `${r.room}|${ch.idx}`;
-      const prev = last.get(key);
-      last.set(key, ch.totalEnergyWh);
-      if (prev === undefined) continue;
-      const delta = ch.totalEnergyWh - prev;
-      if (delta <= 0) continue;
-      if (tsMs < fromMs || tsMs >= toMs) continue;
-      const kwh = delta / 1000;
-      totalKWh += kwh;
-      channels[ch.idx] = (channels[ch.idx] ?? 0) + kwh;
+    if (tsMs < fromMs || tsMs >= toMs) continue;
+    const kwh = delta / 1000;
+    totalKWh += kwh;
+    if (opts.room) {
+      monitors[r.monitor] = (monitors[r.monitor] ?? 0) + kwh;
     }
   }
 
@@ -96,7 +97,7 @@ export async function computeUsage(opts: {
     from: opts.from.toISOString(),
     to: opts.to.toISOString(),
     energyKWh: totalKWh,
-    channels,
+    monitors,
   };
 }
 
@@ -114,19 +115,17 @@ export async function computeSeries(opts: {
   const toMs = opts.to.getTime();
 
   for (const r of readings) {
+    const key = `${r.room}|${r.monitor}`;
+    const prev = last.get(key);
+    last.set(key, r.totalEnergyWh);
+    if (prev === undefined) continue;
+    const delta = r.totalEnergyWh - prev;
+    if (delta <= 0) continue;
     const ts = new Date(r.ts);
     const tsMs = ts.getTime();
-    for (const ch of r.channels) {
-      const key = `${r.room}|${ch.idx}`;
-      const prev = last.get(key);
-      last.set(key, ch.totalEnergyWh);
-      if (prev === undefined) continue;
-      const delta = ch.totalEnergyWh - prev;
-      if (delta <= 0) continue;
-      if (tsMs < fromMs || tsMs >= toMs) continue;
-      const bucketKey = bucketStartUTC(ts, opts.bucket).getTime();
-      buckets.set(bucketKey, (buckets.get(bucketKey) ?? 0) + delta / 1000);
-    }
+    if (tsMs < fromMs || tsMs >= toMs) continue;
+    const bucketKey = bucketStartUTC(ts, opts.bucket).getTime();
+    buckets.set(bucketKey, (buckets.get(bucketKey) ?? 0) + delta / 1000);
   }
 
   // Fill empty buckets so the chart line is continuous.
@@ -147,20 +146,27 @@ export async function computeSeries(opts: {
   return out;
 }
 
+/**
+ * The most recent reading per monitor, plus the room-wide power sum. Used by
+ * the "Right now" card and the freshness dot — a room is "live" if any of its
+ * monitors have reported recently.
+ */
 export async function latestReading(room: string): Promise<LatestReading | null> {
-  let latest: Reading | null = null;
+  const perMonitor = new Map<string, Reading>();
   for await (const r of iterReadings()) {
     if (r.room !== room) continue;
-    if (!latest || r.ts > latest.ts) latest = r;
+    const cur = perMonitor.get(r.monitor);
+    if (!cur || r.ts > cur.ts) perMonitor.set(r.monitor, r);
   }
-  if (!latest) return null;
-  return {
-    ts: latest.ts,
-    powerW: latest.channels.reduce((s, c) => s + (c.powerW || 0), 0),
-    channels: latest.channels.map((c) => ({
-      idx: c.idx,
-      powerW: c.powerW,
-      totalEnergyWh: c.totalEnergyWh,
-    })),
-  };
+  if (perMonitor.size === 0) return null;
+
+  let mostRecent = "";
+  let powerW = 0;
+  const monitors: LatestReading["monitors"] = {};
+  for (const [id, r] of perMonitor) {
+    if (r.ts > mostRecent) mostRecent = r.ts;
+    powerW += r.powerW || 0;
+    monitors[id] = { ts: r.ts, powerW: r.powerW, totalEnergyWh: r.totalEnergyWh };
+  }
+  return { ts: mostRecent, powerW, monitors };
 }
