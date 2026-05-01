@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>5214 · Power dashboard</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="container">
+      <header class="top">
+        <h1>5214</h1>
+        <div class="crumbs">power dashboard</div>
+      </header>
+
+      <div class="grid stats" id="totals"></div>
+
+      <div class="chart-card">
+        <div class="head">
+          <h2>House total · last 30 days</h2>
+          <div class="range-toggle" id="ranges">
+            <button data-bucket="day" data-days="30" class="active">30d</button>
+            <button data-bucket="day" data-days="7">7d</button>
+            <button data-bucket="hour" data-days="1">24h</button>
+            <button data-bucket="month" data-days="365">1y</button>
+          </div>
+        </div>
+        <div class="chart-wrap">
+          <canvas id="totalChart"></canvas>
+        </div>
+      </div>
+
+      <h2 style="font-size: 14px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.06em; margin: 32px 0 12px;">
+        Rooms
+      </h2>
+      <div class="grid cards" id="rooms"></div>
+    </div>
+    <script type="module" src="./index.ts"></script>
+  </body>
+</html>

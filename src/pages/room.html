@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>5214 · Room</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="container">
+      <header class="top">
+        <h1 id="roomTitle">Loading…</h1>
+        <div class="crumbs"><a href="/">← all rooms</a></div>
+      </header>
+      <div class="subtitle" id="roomSubtitle"></div>
+
+      <div id="errorBox"></div>
+
+      <div class="grid stats" id="stats"></div>
+
+      <div class="chart-card">
+        <div class="head">
+          <h2 id="chartTitle">Consumption</h2>
+          <div class="range-toggle" id="ranges">
+            <button data-range="month" class="active">This month</button>
+            <button data-range="lease">Lease to date</button>
+            <button data-range="30d">30d</button>
+            <button data-range="7d">7d</button>
+            <button data-range="24h">24h</button>
+          </div>
+        </div>
+        <div class="chart-wrap">
+          <canvas id="chart"></canvas>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="./room.ts"></script>
+  </body>
+</html>

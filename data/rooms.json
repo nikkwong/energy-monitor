@@ -1,0 +1,32 @@
+{
+  "rooms": {
+    "301": {
+      "label": "Room 301",
+      "channelLabels": {
+        "0": "Total"
+      },
+      "leases": [
+        {
+          "id": "lease-301-1",
+          "tenant": "TBD",
+          "startDate": "2026-05-01",
+          "endDate": null
+        }
+      ]
+    },
+    "b4": {
+      "label": "Room B4",
+      "channelLabels": {
+        "0": "Total"
+      },
+      "leases": [
+        {
+          "id": "lease-b4-1",
+          "tenant": "TBD",
+          "startDate": "2026-05-01",
+          "endDate": null
+        }
+      ]
+    }
+  }
+}

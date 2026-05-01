@@ -1,0 +1,15 @@
+node_modules/
+.env
+.env.local
+*.log
+
+# runtime artifacts
+.bun/
+dist/
+
+# the JSONL telemetry stream is generated at runtime; keep rooms.json in git
+data/readings.jsonl
+data/readings-*.jsonl
+data/*.tmp
+
+.DS_Store
