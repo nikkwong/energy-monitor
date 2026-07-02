@@ -1,11 +1,50 @@
 {
   "baseUrl": "http://localhost:3000",
   "intervalS": 60,
+  "schedule": [
+    {
+      "name": "night",
+      "hours": [0, 1, 2, 3, 4, 5, 6],
+      "idleProbability": 0.9,
+      "powerMultiplier": [0, 0.12]
+    },
+    {
+      "name": "shoulder",
+      "hours": [7, 22, 23],
+      "idleProbability": 0.35,
+      "powerMultiplier": [0.15, 0.55]
+    },
+    {
+      "name": "day",
+      "hours": [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21],
+      "idleProbability": 0.06,
+      "powerMultiplier": [0.55, 1.45]
+    }
+  ],
   "rooms": [
-    { "room": "301", "monitor": "default", "basePowerW": 180, "jitterW": 35 },
-    { "room": "301", "monitor": "south", "basePowerW": 90, "jitterW": 25 },
-    { "room": "b4", "monitor": "default", "basePowerW": 140, "jitterW": 30 },
-    { "room": "402", "monitor": "default", "basePowerW": 220, "jitterW": 50 },
-    { "room": "402", "monitor": "bathroom", "basePowerW": 45, "jitterW": 15 }
+    { "room": "B1" },
+    { "room": "B2" },
+    { "room": "B3" },
+    { "room": "B5" },
+    { "room": "B6" },
+    { "room": "B7" },
+    { "room": "101" },
+    { "room": "102" },
+    { "room": "103" },
+    { "room": "104" },
+    { "room": "105" },
+    { "room": "106" },
+    { "room": "201" },
+    { "room": "202" },
+    { "room": "203" },
+    { "room": "204" },
+    { "room": "205" },
+    { "room": "206" },
+    { "room": "301" },
+    { "room": "302" },
+    { "room": "303" },
+    { "room": "304" },
+    { "room": "305" },
+    { "room": "306" }
   ]
 }
