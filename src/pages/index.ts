@@ -88,8 +88,12 @@ function renderRooms(rooms: RoomSummary[]): void {
   el.innerHTML = rooms
     .map((r) => {
       const cls = freshnessClass(r.lastSeen);
+      const idAttr = escapeHtml(r.id);
+      const labelAttr = escapeHtml(r.label);
       return `
         <a href="/${encodeURIComponent(r.id)}" class="card room">
+          <button class="card-delete" data-room-id="${idAttr}" data-room-label="${labelAttr}"
+                  aria-label="Delete ${labelAttr}" title="Delete ${labelAttr}">×</button>
           <h3><span class="dot ${cls}"></span>${escapeHtml(r.label)}</h3>
           <div class="tenant">${
             r.currentTenant ? escapeHtml(r.currentTenant) : "<i>vacant</i>"
@@ -103,6 +107,42 @@ function renderRooms(rooms: RoomSummary[]): void {
         </a>`;
     })
     .join("");
+
+  // Single delegated handler for all delete buttons. The buttons live inside
+  // the card `<a>` so we must stop propagation + prevent navigation; the
+  // confirm() warns about auto-registration before the network call.
+  el.addEventListener("click", async (e) => {
+    const btn = (e.target as HTMLElement)?.closest(
+      "button.card-delete",
+    ) as HTMLButtonElement | null;
+    if (!btn) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    const roomId = btn.dataset.roomId!;
+    const label = btn.dataset.roomLabel ?? roomId;
+    const ok = window.confirm(
+      `Delete ${label}?\n\n` +
+        `Historical readings stay on disk and stop appearing in the dashboard. ` +
+        `If the Shelly is still POSTing this room id, it'll auto-register again on its next POST.`,
+    );
+    if (!ok) return;
+
+    btn.disabled = true;
+    try {
+      const res = await fetch(`/api/rooms/${encodeURIComponent(roomId)}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`${res.status}: ${text || res.statusText}`);
+      }
+      window.location.reload();
+    } catch (err) {
+      btn.disabled = false;
+      alert(`Could not delete ${label}: ${String(err)}`);
+    }
+  });
 }
 
 function escapeHtml(s: string): string {

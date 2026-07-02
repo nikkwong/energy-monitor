@@ -100,6 +100,46 @@ a.card:hover {
   transform: translateY(-1px);
 }
 
+a.card.room {
+  position: relative;
+}
+
+.card-delete {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-dim);
+  font-size: 16px;
+  line-height: 1;
+  border-radius: 6px;
+  cursor: pointer;
+  opacity: 0.35;
+  transition: opacity 120ms ease, color 120ms ease, background 120ms ease,
+    border-color 120ms ease;
+}
+
+a.card.room:hover .card-delete {
+  opacity: 1;
+}
+
+.card-delete:hover {
+  color: var(--bad);
+  background: var(--bg-elev-2);
+  border-color: var(--border);
+}
+
+.card-delete:disabled {
+  opacity: 0.4;
+  cursor: wait;
+}
+
 .card .label {
   font-size: 12px;
   color: var(--text-dim);

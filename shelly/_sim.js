@@ -1,31 +1,44 @@
 // Local simulation of the Shelly reporter — mirrors report.js exactly.
 // For testing only; NOT shipped to the device.
 //
-// Usage:
-//   bun run sim                         # one tick per active (room, monitor), then exit
-//   bun run sim --watch                 # continuous, every 10s
-//   bun run sim --watch --interval 5    # continuous, every 5s
-//   bun run sim --room 301              # only one room (all its monitors)
-//   bun run sim --base http://host:3000 # custom server URL
+// Mock mode (recommended): edit data/mock-rooms.json, then:
+//   bun run mock                        # continuous, uses mock-rooms.json
+//   bun run mock --interval 10          # every 10s
+//   bun run mock --base http://host:3000
 //
-// Each (room, monitor) pair gets its own randomized "load profile" stable
-// across ticks so the dashboard chart looks plausible. Energy counters
+// Legacy discover mode (rooms already on the server):
+//   bun run sim                         # one tick from GET /api/rooms, exit
+//   bun run sim --watch                 # continuous
+//   bun run sim --discover              # same, explicit
+//
+// Each (room, monitor) pair gets its own load profile. Energy counters
 // increment realistically based on power × elapsed time.
 
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
+
+const ID_RE = /^[A-Za-z0-9_-]{1,16}$/;
+const DEFAULT_CONFIG = resolve(process.cwd(), "data/mock-rooms.json");
+
 const args = parseArgs(process.argv.slice(2));
-const BASE_URL = args.base ?? "http://localhost:3000";
+const BASE_URL = args.base ?? null;
 const ROOM_FILTER = args.room ?? null;
 const WATCH = args.watch ?? false;
-const INTERVAL_MS = (args.interval ?? 10) * 1000;
+const INTERVAL_MS =
+  (args.interval ?? null) != null ? args.interval * 1000 : null;
+const CONFIG_PATH = args.config ?? (args.discover ? null : DEFAULT_CONFIG);
+const USE_DISCOVER = args.discover || CONFIG_PATH == null;
 
 function parseArgs(argv) {
   const out = {};
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--watch") out.watch = true;
+    else if (a === "--discover") out.discover = true;
     else if (a === "--interval") out.interval = Number(argv[++i]);
     else if (a === "--room") out.room = argv[++i];
     else if (a === "--base") out.base = argv[++i];
+    else if (a === "--config") out.config = resolve(process.cwd(), argv[++i]);
     else if (a.startsWith("--")) console.warn("unknown flag:", a);
     else if (!out.room) out.room = a;
     else if (!out.base) out.base = a;
@@ -33,23 +46,36 @@ function parseArgs(argv) {
   return out;
 }
 
+/** @typedef {{ room: string, monitor: string, basePowerW?: number, jitterW?: number, ip?: string }} MockEntry */
+
+/**
+ * @typedef {{
+ *   baseUrl?: string,
+ *   intervalS?: number,
+ *   rooms: MockEntry[],
+ * }} MockConfig
+ */
+
 // Per-(room, monitor) state held across ticks so the cumulative counter
 // increases monotonically.
 const state = new Map();
 
-function getState(roomId, monitorId) {
+/**
+ * @param {string} roomId
+ * @param {string} monitorId
+ * @param {MockEntry | undefined} seed
+ */
+function getState(roomId, monitorId, seed) {
   const key = `${roomId}|${monitorId}`;
   let s = state.get(key);
   if (!s) {
     s = {
-      // Seed each monitor with a random "typical load" so the chart has variety.
-      basePowerW: 80 + Math.floor(Math.random() * 250),
-      jitterW: 30 + Math.floor(Math.random() * 50),
+      basePowerW: seed?.basePowerW ?? 80 + Math.floor(Math.random() * 250),
+      jitterW: seed?.jitterW ?? 30 + Math.floor(Math.random() * 50),
       totalEnergyWh: 1000 + Math.floor(Math.random() * 50000),
       lastTick: Date.now(),
-      // Stable per-key fake LAN IP so each simulated device gets its own
-      // click-through link in the dashboard.
-      stationIp: `192.168.42.${10 + (state.size % 240)}`,
+      stationIp:
+        seed?.ip ?? `192.168.42.${10 + (state.size % 240)}`,
     };
     state.set(key, s);
   }
@@ -107,86 +133,145 @@ function fakeStatus(s) {
   };
 }
 
-async function postOnce(roomId, monitorId) {
-  const s = getState(roomId, monitorId);
+/**
+ * @param {string} baseUrl
+ * @param {{ room: string, monitor: string, seed?: MockEntry }} target
+ */
+async function postOnce(baseUrl, { room, monitor, seed }) {
+  const s = getState(room, monitor, seed);
   const status = fakeStatus(s);
   const body = JSON.stringify({
     method: "NotifyStatus",
     params: pickEmFields(status),
   });
-  const r = await fetch(
-    `${BASE_URL}/api/ingest/${roomId}/${monitorId}`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body,
-    },
-  );
+  const r = await fetch(`${baseUrl}/api/ingest/${room}/${monitor}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body,
+  });
   const txt = await r.text();
   const stamp = new Date().toLocaleTimeString();
   const w = status["em1:0"].act_power.toFixed(0);
   const wh = status["em1data:0"].total_act_energy.toFixed(0);
-  const path = `${roomId}/${monitorId}`;
+  const path = `${room}/${monitor}`;
   console.log(
     `[${stamp}] ${path.padEnd(18)} ${w.padStart(4)}W  total=${wh}Wh  -> ${r.status} ${txt}`,
   );
 }
 
+/** @param {MockConfig} cfg */
+function targetsFromConfig(cfg) {
+  if (!Array.isArray(cfg.rooms) || cfg.rooms.length === 0) {
+    throw new Error("mock config: `rooms` must be a non-empty array");
+  }
+  /** @type {Array<{ room: string, monitor: string, seed?: MockEntry }>} */
+  const out = [];
+  for (const entry of cfg.rooms) {
+    const room = entry.room;
+    const monitor = entry.monitor ?? "default";
+    if (typeof room !== "string" || !ID_RE.test(room)) {
+      throw new Error(`mock config: invalid room id "${room}"`);
+    }
+    if (!ID_RE.test(monitor)) {
+      throw new Error(`mock config: invalid monitor id "${monitor}"`);
+    }
+    if (ROOM_FILTER && room !== ROOM_FILTER) continue;
+    out.push({ room, monitor, seed: entry });
+  }
+  if (out.length === 0) {
+    throw new Error(
+      ROOM_FILTER
+        ? `mock config: no entries for room "${ROOM_FILTER}"`
+        : "mock config: no valid room entries",
+    );
+  }
+  return out;
+}
+
 /**
- * Pull room ids and their monitor lists from the running server.
- * Falls back to monitor=`default` for any room without an explicit list,
- * matching the server's implicit-default behavior.
+ * @param {string} baseUrl
+ * @returns {Promise<Array<{ room: string, monitor: string }>>}
  */
-async function discoverTargets() {
-  const r = await fetch(`${BASE_URL}/api/rooms`);
+async function discoverTargets(baseUrl) {
+  const r = await fetch(`${baseUrl}/api/rooms`);
   if (!r.ok) throw new Error(`GET /api/rooms failed: ${r.status}`);
   const { rooms } = await r.json();
+  /** @type {Array<{ room: string, monitor: string }>} */
   const targets = [];
   for (const room of rooms) {
+    if (ROOM_FILTER && room.id !== ROOM_FILTER) continue;
     const monitors =
       Array.isArray(room.monitors) && room.monitors.length > 0
         ? room.monitors
         : ["default"];
-    for (const m of monitors) targets.push([room.id, m]);
+    for (const m of monitors) targets.push({ room: room.id, monitor: m });
   }
   return targets;
 }
 
-async function tick(targets) {
-  await Promise.all(targets.map(([r, m]) => postOnce(r, m)));
+/** @param {string} baseUrl @param {Array<{ room: string, monitor: string, seed?: MockEntry }>} targets */
+async function tick(baseUrl, targets) {
+  await Promise.all(targets.map((t) => postOnce(baseUrl, t)));
+}
+
+/** @param {string} path */
+async function loadMockConfig(path) {
+  let text;
+  try {
+    text = await readFile(path, "utf8");
+  } catch (err) {
+    if ((/** @type {NodeJS.ErrnoException} */ (err)).code === "ENOENT") {
+      throw new Error(
+        `mock config not found: ${path}\n` +
+          "Create data/mock-rooms.json or pass --discover to use rooms.json on the server.",
+      );
+    }
+    throw err;
+  }
+  const cfg = JSON.parse(text);
+  if (!cfg || typeof cfg !== "object") {
+    throw new Error(`mock config: expected JSON object in ${path}`);
+  }
+  return /** @type {MockConfig} */ (cfg);
 }
 
 async function main() {
+  let baseUrl = BASE_URL;
+  let intervalMs = INTERVAL_MS;
+  /** @type {Array<{ room: string, monitor: string, seed?: MockEntry }>} */
   let targets;
-  if (ROOM_FILTER) {
-    // Without /api/rooms we don't know the monitor list; ping every monitor
-    // declared on that room by hitting /api/rooms first and filtering.
-    const all = await discoverTargets();
-    targets = all.filter(([r]) => r === ROOM_FILTER);
+
+  if (USE_DISCOVER) {
+    baseUrl = baseUrl ?? "http://localhost:3000";
+    targets = await discoverTargets(baseUrl);
     if (targets.length === 0) {
-      console.error(`no monitors for room "${ROOM_FILTER}" — check data/rooms.json`);
+      console.error("no rooms on server — add to data/rooms.json or use mock config");
       process.exit(1);
     }
+    intervalMs = intervalMs ?? 10 * 1000;
   } else {
-    targets = await discoverTargets();
-    if (targets.length === 0) {
-      console.error("no rooms in data/rooms.json — add one and retry");
-      process.exit(1);
-    }
+    const cfg = await loadMockConfig(CONFIG_PATH);
+    baseUrl = baseUrl ?? cfg.baseUrl ?? "http://localhost:3000";
+    intervalMs = intervalMs ?? (cfg.intervalS ?? 60) * 1000;
+    targets = targetsFromConfig(cfg);
   }
-  const summary = targets.map(([r, m]) => `${r}/${m}`).join(", ");
+
+  const summary = targets.map((t) => `${t.room}/${t.monitor}`).join(", ");
+  const mode = USE_DISCOVER ? "discover" : `config ${CONFIG_PATH}`;
   console.log(
-    `simulating ${targets.length} monitor(s) [${summary}] -> ${BASE_URL}` +
-      (WATCH ? `  every ${INTERVAL_MS / 1000}s` : "  (single tick)"),
+    `mock sim [${mode}]: ${targets.length} monitor(s) [${summary}] -> ${baseUrl}` +
+      (WATCH ? `  every ${intervalMs / 1000}s` : "  (single tick)"),
   );
-  await tick(targets);
+
+  await tick(baseUrl, targets);
   if (!WATCH) return;
+
   setInterval(() => {
-    tick(targets).catch((e) => console.error("tick failed:", e.message));
-  }, INTERVAL_MS);
+    tick(baseUrl, targets).catch((e) => console.error("tick failed:", e.message));
+  }, intervalMs);
 }
 
 main().catch((e) => {
-  console.error(e);
+  console.error(e.message ?? e);
   process.exit(1);
 });

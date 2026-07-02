@@ -3,7 +3,14 @@
     "301": {
       "label": "Room 301",
       "monitors": {
-        "default": { "label": "Mains" }
+        "default": {
+          "label": "Mains",
+          "ip": "192.168.42.10"
+        },
+        "south": {
+          "label": "south",
+          "ip": "192.168.42.11"
+        }
       },
       "leases": [
         {
@@ -14,10 +21,27 @@
         }
       ]
     },
+    "402": {
+      "label": "Room 402",
+      "monitors": {
+        "bathroom": {
+          "label": "bathroom",
+          "ip": "192.168.42.14"
+        },
+        "default": {
+          "label": "default",
+          "ip": "192.168.42.13"
+        }
+      },
+      "leases": []
+    },
     "b4": {
       "label": "Room B4",
       "monitors": {
-        "default": { "label": "Mains" }
+        "default": {
+          "label": "Mains",
+          "ip": "192.168.42.12"
+        }
       },
       "leases": [
         {

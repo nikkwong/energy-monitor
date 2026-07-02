@@ -1,0 +1,11 @@
+{
+  "baseUrl": "http://localhost:3000",
+  "intervalS": 60,
+  "rooms": [
+    { "room": "301", "monitor": "default", "basePowerW": 180, "jitterW": 35 },
+    { "room": "301", "monitor": "south", "basePowerW": 90, "jitterW": 25 },
+    { "room": "b4", "monitor": "default", "basePowerW": 140, "jitterW": 30 },
+    { "room": "402", "monitor": "default", "basePowerW": 220, "jitterW": 50 },
+    { "room": "402", "monitor": "bathroom", "basePowerW": 45, "jitterW": 15 }
+  ]
+}

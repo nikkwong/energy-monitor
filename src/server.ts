@@ -1,7 +1,12 @@
 import index from "./pages/index.html";
 import room from "./pages/room.html";
 
-import { appendReading, ensureRoomAndMonitor, readRooms } from "./lib/data.ts";
+import {
+  appendReading,
+  deleteRoom,
+  ensureRoomAndMonitor,
+  readRooms,
+} from "./lib/data.ts";
 import { normalizeShelly } from "./lib/shelly.ts";
 import {
   computeSeries,
@@ -93,6 +98,25 @@ const server = Bun.serve({
         }),
       );
       return Response.json({ rooms: out });
+    },
+
+    // Operator-only: hide a room from the dashboard. Removes the entry from
+    // rooms.json; historical readings stay on disk but the aggregator filters
+    // them out. If the device is still POSTing to this id, it'll auto-register
+    // on its next POST — that's by design (the Shellys are the source of
+    // truth) but the operator should turn off / re-flash the device first if
+    // they don't want the room to come back.
+    "/api/rooms/:roomId": {
+      DELETE: async (req) => {
+        const { roomId } = req.params;
+        if (!ROOM_ID_RE.test(roomId)) return badRequest("invalid roomId");
+        const removed = await deleteRoom(roomId);
+        if (!removed) {
+          return Response.json({ error: "no such room" }, { status: 404 });
+        }
+        console.log(`deleted room ${roomId}`);
+        return Response.json({ ok: true, deleted: roomId });
+      },
     },
 
     "/api/rooms/:roomId/usage": async (req) => {

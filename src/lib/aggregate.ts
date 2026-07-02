@@ -1,4 +1,4 @@
-import { iterReadings } from "./data.ts";
+import { iterReadings, readRooms } from "./data.ts";
 import type { Reading } from "./types.ts";
 
 export type Bucket = "hour" | "day" | "month";
@@ -43,11 +43,26 @@ function bucketStartUTC(d: Date, bucket: Bucket): Date {
  * Pulls every reading for `room` (or all rooms if undefined), sorted by ts.
  * For our scale (hundreds of readings/day per room) this is fine. If the
  * stream grows past ~10MB we should switch to monthly shards.
+ *
+ * For house-wide queries (no specific `room`), readings belonging to rooms
+ * that were deleted from `rooms.json` are filtered out. `readings.jsonl` is
+ * append-only so the data physically remains on disk, but dropping it from
+ * aggregation makes the deletion visible everywhere a dashboard cares about
+ * (house total, summaries) without rewriting the file.
  */
 async function loadSorted(room?: string): Promise<Reading[]> {
+  let allowed: Set<string> | null = null;
+  if (!room) {
+    const cfg = await readRooms();
+    allowed = new Set(Object.keys(cfg.rooms));
+  }
   const out: Reading[] = [];
   for await (const r of iterReadings()) {
-    if (room && r.room !== room) continue;
+    if (room) {
+      if (r.room !== room) continue;
+    } else if (allowed && !allowed.has(r.room)) {
+      continue;
+    }
     out.push(r);
   }
   out.sort((a, b) => a.ts.localeCompare(b.ts));

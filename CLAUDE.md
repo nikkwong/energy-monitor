@@ -77,6 +77,7 @@ route handler.**
 - `GET /api/rooms/:roomId/usage` — month, lease-to-date, latest, per-monitor breakdown
 - `GET /api/rooms/:roomId/series?from=&to=&bucket=hour|day|month`
 - `GET /api/series?from=&to=&bucket=…` — house total
+- `DELETE /api/rooms/:roomId` — remove a room from `rooms.json`. Readings stay on disk but are filtered out of every aggregation. Operator action; if a Shelly still POSTs this room id it'll auto-register on its next POST.
 - `POST /api/ingest/:roomId/:monitorId` — Shelly webhook (one path per device)
 - `GET  /api/ingest/:roomId/:monitorId?total_act_energy=…&act_power=…` — legacy
 - `POST|GET /api/ingest/:roomId` — shorthand for `monitor=default` (single-monitor rooms)
@@ -121,6 +122,15 @@ outside the repo (typically `/var/lib/5214`, symlinked).
  the entry in `data/rooms.json` automatically. Edit `rooms.json` afterwards
  to give the auto-created entry a friendlier label or to start tracking a
  lease.
+- **Delete a room** (e.g. test data left in prod): click the × on the
+ room's card on the homepage (or `curl -X DELETE
+ /api/rooms/<roomId>`). Removes the entry from `rooms.json`; historical
+ readings stay in `readings.jsonl` but are filtered out of every
+ aggregation, so the room silently disappears. **Important**: if the
+ Shelly is still POSTing to that room id, it'll auto-register on its next
+ POST. Stop or re-flash the device first if you want the deletion to
+ stick. To recover a deleted room's data, re-add it to `rooms.json`
+ (manually, or wait for the next auto-register).
 - **Rotate a tenant**: set the active lease's `endDate` to today, append a new
   lease with `endDate: null`. Past usage stays attributed to the old tenant
   because aggregation windows the readings by `[lease.startDate, lease.endDate)`.

@@ -58,6 +58,40 @@ export async function appendReading(r: Reading): Promise<void> {
 }
 
 /**
+ * Remove a room (and all its monitors) from `rooms.json`. The room's
+ * historical readings stay in `readings.jsonl` — that file is append-only by
+ * design — but the aggregator filters them out at read time, so deleted rooms
+ * silently disappear from every dashboard and the house total. To bring the
+ * data back, re-add the room to `rooms.json` (or wait for the device to
+ * auto-register on its next POST).
+ *
+ * Returns `false` if no such room existed (caller should 404).
+ */
+export async function deleteRoom(roomId: string): Promise<boolean> {
+  await ensureDataDir();
+  return enqueue(async () => {
+    let cfg: RoomsConfig;
+    try {
+      const text = await readFile(ROOMS_PATH, "utf8");
+      const parsed = JSON.parse(text) as RoomsConfig;
+      cfg =
+        parsed && parsed.rooms && typeof parsed.rooms === "object"
+          ? parsed
+          : { rooms: {} };
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw err;
+    }
+    if (!cfg.rooms[roomId]) return false;
+    delete cfg.rooms[roomId];
+    const tmp = ROOMS_PATH + ".tmp";
+    await writeFile(tmp, JSON.stringify(cfg, null, 2) + "\n", "utf8");
+    await rename(tmp, ROOMS_PATH);
+    return true;
+  });
+}
+
+/**
  * Idempotently ensure `rooms.json` has an entry for `(roomId, monitorId)`,
  * creating both with sensible defaults if missing, and refreshing any
  * `observed` fields (currently just `ip`) on each call.

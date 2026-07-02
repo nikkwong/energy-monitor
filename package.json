@@ -8,7 +8,8 @@
     "dev": "bun --hot run src/server.ts",
     "start": "NODE_ENV=production bun run src/server.ts",
     "typecheck": "bun --bun tsc --noEmit",
-    "sim": "bun run shelly/_sim.js"
+    "sim": "bun run shelly/_sim.js --discover",
+    "mock": "bun run shelly/_sim.js --config data/mock-rooms.json --watch"
   },
   "devDependencies": {
     "@types/bun": "latest",
