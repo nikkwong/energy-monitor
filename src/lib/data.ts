@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile, appendFile, rename } from "node:fs/promises";
 import { resolve } from "node:path";
-import type { Reading, RoomsConfig } from "./types.ts";
+import type { Lease, Reading, RoomsConfig } from "./types.ts";
 
 const DATA_DIR = resolve(process.cwd(), "data");
 const ROOMS_PATH = resolve(DATA_DIR, "rooms.json");
@@ -89,6 +89,109 @@ export async function deleteRoom(roomId: string): Promise<boolean> {
     await rename(tmp, ROOMS_PATH);
     return true;
   });
+}
+
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function parseIsoDate(v: string): string | null {
+  if (!ISO_DATE_RE.test(v)) return null;
+  const d = new Date(v + "T00:00:00Z");
+  if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== v) return null;
+  return v;
+}
+
+function todayUtc(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function nextLeaseId(roomId: string): string {
+  return `lease-${roomId}-${Date.now()}`;
+}
+
+async function writeRoomsInQueue(cfg: RoomsConfig): Promise<void> {
+  const tmp = ROOMS_PATH + ".tmp";
+  await writeFile(tmp, JSON.stringify(cfg, null, 2) + "\n", "utf8");
+  await rename(tmp, ROOMS_PATH);
+}
+
+/**
+ * End the room's current lease (the entry with `endDate === null`).
+ * `endDate` is exclusive — readings on that date belong to the next tenant.
+ */
+export async function endCurrentLease(
+  roomId: string,
+  endDate?: string,
+): Promise<Lease> {
+  await ensureDataDir();
+  return enqueue(async () => {
+    const text = await readFile(ROOMS_PATH, "utf8");
+    const cfg = JSON.parse(text) as RoomsConfig;
+    const room = cfg.rooms[roomId];
+    if (!room) throw new LeaseError("no such room", 404);
+
+    const current = room.leases.find((l) => l.endDate === null);
+    if (!current) throw new LeaseError("no active lease", 400);
+
+    const end = parseIsoDate(endDate ?? todayUtc());
+    if (!end) throw new LeaseError("invalid endDate", 400);
+    if (end <= current.startDate) {
+      throw new LeaseError("endDate must be after lease startDate", 400);
+    }
+
+    current.endDate = end;
+    await writeRoomsInQueue(cfg);
+    return current;
+  });
+}
+
+/**
+ * Append a new active lease. If a lease is currently open, it is closed with
+ * `endDate = startDate` of the new one so tenancy windows stay contiguous.
+ */
+export async function startLease(
+  roomId: string,
+  tenant: string,
+  startDate: string,
+): Promise<Lease> {
+  await ensureDataDir();
+  return enqueue(async () => {
+    const text = await readFile(ROOMS_PATH, "utf8");
+    const cfg = JSON.parse(text) as RoomsConfig;
+    const room = cfg.rooms[roomId];
+    if (!room) throw new LeaseError("no such room", 404);
+
+    const name = tenant.trim();
+    if (!name) throw new LeaseError("tenant is required", 400);
+
+    const start = parseIsoDate(startDate);
+    if (!start) throw new LeaseError("invalid startDate", 400);
+
+    const current = room.leases.find((l) => l.endDate === null);
+    if (current) {
+      if (start <= current.startDate) {
+        throw new LeaseError("startDate must be after current lease startDate", 400);
+      }
+      current.endDate = start;
+    }
+
+    const lease: Lease = {
+      id: nextLeaseId(roomId),
+      tenant: name,
+      startDate: start,
+      endDate: null,
+    };
+    room.leases.push(lease);
+    await writeRoomsInQueue(cfg);
+    return lease;
+  });
+}
+
+export class LeaseError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
 }
 
 /**

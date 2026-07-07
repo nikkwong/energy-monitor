@@ -4,8 +4,11 @@ import room from "./pages/room.html";
 import {
   appendReading,
   deleteRoom,
+  endCurrentLease,
   ensureRoomAndMonitor,
+  LeaseError,
   readRooms,
+  startLease,
 } from "./lib/data.ts";
 import { normalizeShelly } from "./lib/shelly.ts";
 import {
@@ -116,6 +119,59 @@ const server = Bun.serve({
         }
         console.log(`deleted room ${roomId}`);
         return Response.json({ ok: true, deleted: roomId });
+      },
+    },
+
+    "/api/rooms/:roomId/leases": {
+      POST: async (req) => {
+        const { roomId } = req.params;
+        if (!ROOM_ID_RE.test(roomId)) return badRequest("invalid roomId");
+        let body: { tenant?: unknown; startDate?: unknown };
+        try {
+          body = (await req.json()) as typeof body;
+        } catch {
+          return badRequest("expected JSON body");
+        }
+        if (typeof body.tenant !== "string" || typeof body.startDate !== "string") {
+          return badRequest("tenant and startDate are required");
+        }
+        try {
+          const lease = await startLease(roomId, body.tenant, body.startDate);
+          console.log(`started lease ${lease.id} for room ${roomId}`);
+          return Response.json({ ok: true, lease });
+        } catch (err) {
+          if (err instanceof LeaseError) {
+            return Response.json({ error: err.message }, { status: err.status });
+          }
+          throw err;
+        }
+      },
+    },
+
+    "/api/rooms/:roomId/leases/current/end": {
+      POST: async (req) => {
+        const { roomId } = req.params;
+        if (!ROOM_ID_RE.test(roomId)) return badRequest("invalid roomId");
+        let endDate: string | undefined;
+        try {
+          const body = (await req.json()) as { endDate?: unknown };
+          if (body.endDate != null) {
+            if (typeof body.endDate !== "string") return badRequest("endDate must be a string");
+            endDate = body.endDate;
+          }
+        } catch {
+          // Empty body — default end date to today.
+        }
+        try {
+          const lease = await endCurrentLease(roomId, endDate);
+          console.log(`ended lease ${lease.id} for room ${roomId}`);
+          return Response.json({ ok: true, lease });
+        } catch (err) {
+          if (err instanceof LeaseError) {
+            return Response.json({ error: err.message }, { status: err.status });
+          }
+          throw err;
+        }
       },
     },
 

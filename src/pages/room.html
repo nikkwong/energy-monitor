@@ -11,9 +11,14 @@
     <div class="container">
       <header class="top">
         <h1 id="roomTitle">Loading…</h1>
-        <div class="crumbs"><a href="/">← all rooms</a></div>
+        <div class="header-actions">
+          <button type="button" id="editToggle" class="btn-text" hidden>Edit</button>
+          <div class="crumbs"><a href="/">← all rooms</a></div>
+        </div>
       </header>
       <div class="subtitle" id="roomSubtitle"></div>
+
+      <div id="editPanel" class="edit-panel" hidden></div>
 
       <div id="errorBox"></div>
 
