@@ -1,5 +1,4 @@
-import { stat } from "node:fs/promises";
-import { iterReadings, paths, readRooms } from "./data.ts";
+import { iterReadings, readRooms } from "./data.ts";
 import { visibleMonitorIds } from "./monitors.ts";
 import type { Reading, RoomsConfig } from "./types.ts";
 
@@ -75,53 +74,28 @@ function roomFromCounterKey(key: string): string {
   return sep === -1 ? key : key.slice(0, sep);
 }
 
-// In-memory cache keyed on readings.jsonl + rooms.json mtimes. Invalidates
-// automatically when either file changes (append, prune, lease edit).
-let cacheKey = "";
-let cachedReadings: Reading[] = [];
-
-async function fileMtimeMs(path: string): Promise<number> {
-  try {
-    const s = await stat(path);
-    return s.mtimeMs;
-  } catch {
-    return 0;
-  }
-}
-
-/**
- * Load, filter, and sort the full telemetry stream once. Every aggregator
- * reuses this so a homepage with 24 rooms does one disk pass, not 72+.
- */
-async function loadAllReadings(): Promise<Reading[]> {
-  const [readingsMtime, roomsMtime] = await Promise.all([
-    fileMtimeMs(paths.readings),
-    fileMtimeMs(paths.rooms),
-  ]);
-  const key = `${readingsMtime}:${roomsMtime}`;
-  if (key === cacheKey) return cachedReadings;
-
+async function readFilterContext(): Promise<{
+  allowedRooms: Set<string>;
+  monitorLists: Map<string, Set<string> | null>;
+}> {
   const cfg = await readRooms();
-  const allowedRooms = new Set(Object.keys(cfg.rooms));
-  const monitorLists = monitorAllowlist(cfg);
-
-  const out: Reading[] = [];
-  for await (const r of iterReadings()) {
-    if (!allowedRooms.has(r.room)) continue;
-    if (!readingAllowed(r, monitorLists)) continue;
-    out.push(r);
-  }
-  out.sort((a, b) => a.ts.localeCompare(b.ts));
-
-  cacheKey = key;
-  cachedReadings = out;
-  return out;
+  return {
+    allowedRooms: new Set(Object.keys(cfg.rooms)),
+    monitorLists: monitorAllowlist(cfg),
+  };
 }
 
-async function loadSorted(room?: string): Promise<Reading[]> {
-  const all = await loadAllReadings();
-  if (!room) return all;
-  return all.filter((r) => r.room === room);
+function shouldUseReading(
+  r: Reading,
+  ctx: { allowedRooms: Set<string>; monitorLists: Map<string, Set<string> | null> },
+  room?: string,
+): boolean {
+  if (room) {
+    if (r.room !== room) return false;
+  } else if (!ctx.allowedRooms.has(r.room)) {
+    return false;
+  }
+  return readingAllowed(r, ctx.monitorLists);
 }
 
 function leaseStartMs(room: RoomsConfig["rooms"][string]): number {
@@ -167,9 +141,14 @@ export async function computeAllRoomSummaries(
 
   const lastCounter = new Map<string, number>();
   const latestByKey = new Map<string, Reading>();
-  const readings = await loadAllReadings();
+  const monitorLists = monitorAllowlist(cfg);
 
-  for (const r of readings) {
+  // Stream in append order instead of loading + sorting the full JSONL. Shelly
+  // reports are append-only and effectively chronological; keeping this
+  // streaming prevents a large mock-polluted file from blocking the process.
+  for await (const r of iterReadings()) {
+    if (!leaseFromMs.has(r.room)) continue;
+    if (!readingAllowed(r, monitorLists)) continue;
     const key = counterKey(r);
     const prevLatest = latestByKey.get(key);
     if (!prevLatest || r.ts > prevLatest.ts) latestByKey.set(key, r);
@@ -216,7 +195,7 @@ export async function computeUsage(opts: {
   from: Date;
   to: Date;
 }): Promise<UsageSummary> {
-  const readings = await loadSorted(opts.room);
+  const ctx = await readFilterContext();
   const last = new Map<string, number>();
   const monitors: Record<string, number> = {};
   let totalKWh = 0;
@@ -224,7 +203,8 @@ export async function computeUsage(opts: {
   const fromMs = opts.from.getTime();
   const toMs = opts.to.getTime();
 
-  for (const r of readings) {
+  for await (const r of iterReadings()) {
+    if (!shouldUseReading(r, ctx, opts.room)) continue;
     const key = counterKey(r);
     const prev = last.get(key);
     last.set(key, r.totalEnergyWh);
@@ -254,14 +234,15 @@ export async function computeSeries(opts: {
   to: Date;
   bucket: Bucket;
 }): Promise<SeriesPoint[]> {
-  const readings = await loadSorted(opts.room);
+  const ctx = await readFilterContext();
   const last = new Map<string, number>();
   const buckets = new Map<number, number>();
 
   const fromMs = opts.from.getTime();
   const toMs = opts.to.getTime();
 
-  for (const r of readings) {
+  for await (const r of iterReadings()) {
+    if (!shouldUseReading(r, ctx, opts.room)) continue;
     const key = counterKey(r);
     const prev = last.get(key);
     last.set(key, r.totalEnergyWh);
@@ -294,8 +275,9 @@ export async function computeSeries(opts: {
 
 export async function latestReading(room: string): Promise<LatestReading | null> {
   const perMonitor = new Map<string, Reading>();
-  const readings = await loadSorted(room);
-  for (const r of readings) {
+  const ctx = await readFilterContext();
+  for await (const r of iterReadings()) {
+    if (!shouldUseReading(r, ctx, room)) continue;
     const cur = perMonitor.get(r.monitor);
     if (!cur || r.ts > cur.ts) perMonitor.set(r.monitor, r);
   }
