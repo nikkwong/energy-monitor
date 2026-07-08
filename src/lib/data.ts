@@ -91,6 +91,41 @@ export async function deleteRoom(roomId: string): Promise<boolean> {
   });
 }
 
+/**
+ * Remove one monitor from a room in `rooms.json`. Readings for that monitor
+ * stay in `readings.jsonl` but stop contributing to totals once the monitor
+ * is no longer listed (see `aggregate.ts` allowlist).
+ *
+ * Returns `false` if the room or monitor did not exist.
+ */
+export async function deleteMonitor(
+  roomId: string,
+  monitorId: string,
+): Promise<boolean> {
+  await ensureDataDir();
+  return enqueue(async () => {
+    let cfg: RoomsConfig;
+    try {
+      const text = await readFile(ROOMS_PATH, "utf8");
+      const parsed = JSON.parse(text) as RoomsConfig;
+      cfg =
+        parsed && parsed.rooms && typeof parsed.rooms === "object"
+          ? parsed
+          : { rooms: {} };
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw err;
+    }
+    const room = cfg.rooms[roomId];
+    if (!room?.monitors?.[monitorId]) return false;
+    delete room.monitors[monitorId];
+    const tmp = ROOMS_PATH + ".tmp";
+    await writeFile(tmp, JSON.stringify(cfg, null, 2) + "\n", "utf8");
+    await rename(tmp, ROOMS_PATH);
+    return true;
+  });
+}
+
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 function parseIsoDate(v: string): string | null {

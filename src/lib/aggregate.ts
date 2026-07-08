@@ -1,5 +1,5 @@
 import { iterReadings, readRooms } from "./data.ts";
-import type { Reading } from "./types.ts";
+import type { Reading, RoomsConfig } from "./types.ts";
 
 export type Bucket = "hour" | "day" | "month";
 
@@ -40,6 +40,34 @@ function bucketStartUTC(d: Date, bucket: Bucket): Date {
 }
 
 /**
+ * When a room has an explicit `monitors` map in `rooms.json`, only readings
+ * whose `monitor` id is listed there are counted. This lets operators drop a
+ * ghost feed (e.g. a typo'd `default` left over from mock ingest) by deleting
+ * its key from `rooms.json` — historical lines stay in the JSONL but stop
+ * affecting totals and the UI.
+ *
+ * Rooms with no `monitors` block (legacy / not yet curated) accept every
+ * monitor id so old shorthand `/api/ingest/:roomId` → `default` keeps working.
+ */
+function monitorAllowlist(cfg: RoomsConfig): Map<string, Set<string> | null> {
+  const out = new Map<string, Set<string> | null>();
+  for (const [roomId, room] of Object.entries(cfg.rooms)) {
+    const ids = room.monitors ? Object.keys(room.monitors) : [];
+    out.set(roomId, ids.length > 0 ? new Set(ids) : null);
+  }
+  return out;
+}
+
+function readingAllowed(
+  r: Reading,
+  allowlists: Map<string, Set<string> | null>,
+): boolean {
+  const allow = allowlists.get(r.room);
+  if (!allow) return true;
+  return allow.has(r.monitor);
+}
+
+/**
  * Pulls every reading for `room` (or all rooms if undefined), sorted by ts.
  * For our scale (hundreds of readings/day per room) this is fine. If the
  * stream grows past ~10MB we should switch to monthly shards.
@@ -51,18 +79,22 @@ function bucketStartUTC(d: Date, bucket: Bucket): Date {
  * (house total, summaries) without rewriting the file.
  */
 async function loadSorted(room?: string): Promise<Reading[]> {
-  let allowed: Set<string> | null = null;
+  const cfg = await readRooms();
+  let allowedRooms: Set<string> | null = null;
+  const monitorLists = monitorAllowlist(cfg);
+
   if (!room) {
-    const cfg = await readRooms();
-    allowed = new Set(Object.keys(cfg.rooms));
+    allowedRooms = new Set(Object.keys(cfg.rooms));
   }
+
   const out: Reading[] = [];
   for await (const r of iterReadings()) {
     if (room) {
       if (r.room !== room) continue;
-    } else if (allowed && !allowed.has(r.room)) {
+    } else if (allowedRooms && !allowedRooms.has(r.room)) {
       continue;
     }
+    if (!readingAllowed(r, monitorLists)) continue;
     out.push(r);
   }
   out.sort((a, b) => a.ts.localeCompare(b.ts));
@@ -167,9 +199,12 @@ export async function computeSeries(opts: {
  * monitors have reported recently.
  */
 export async function latestReading(room: string): Promise<LatestReading | null> {
+  const cfg = await readRooms();
+  const monitorLists = monitorAllowlist(cfg);
   const perMonitor = new Map<string, Reading>();
   for await (const r of iterReadings()) {
     if (r.room !== room) continue;
+    if (!readingAllowed(r, monitorLists)) continue;
     const cur = perMonitor.get(r.monitor);
     if (!cur || r.ts > cur.ts) perMonitor.set(r.monitor, r);
   }

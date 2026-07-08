@@ -288,7 +288,7 @@ function targetsFromConfig(cfg) {
   const out = [];
   for (const entry of cfg.rooms) {
     const room = entry.room;
-    const monitor = entry.monitor ?? "default";
+    const monitor = entry.monitor ?? "sim";
     if (typeof room !== "string" || !ID_RE.test(room)) {
       throw new Error(`mock config: invalid room id "${room}"`);
     }

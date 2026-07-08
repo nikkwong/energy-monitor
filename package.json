@@ -9,7 +9,9 @@
     "start": "NODE_ENV=production bun run src/server.ts",
     "typecheck": "bun --bun tsc --noEmit",
     "sim": "bun run shelly/_sim.js --discover",
-    "mock": "bun run shelly/_sim.js --config data/mock-rooms.json --watch"
+    "mock": "bun run shelly/_sim.js --config data/mock-rooms.json --watch",
+    "prune": "bun run scripts/prune-defaults.ts",
+    "prune:mock-rooms": "bun run scripts/prune-defaults.ts --mock-rooms"
   },
   "devDependencies": {
     "@types/bun": "latest",

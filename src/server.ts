@@ -4,6 +4,7 @@ import room from "./pages/room.html";
 import {
   appendReading,
   deleteRoom,
+  deleteMonitor,
   endCurrentLease,
   ensureRoomAndMonitor,
   LeaseError,
@@ -44,6 +45,13 @@ function monitorList(r: Room): string[] {
     return Object.keys(r.monitors);
   }
   return [DEFAULT_MONITOR_ID];
+}
+
+/** True when the room already tracks named feeds and should not accept shorthand `default` ingest. */
+function roomUsesNamedMonitors(r: Room | undefined): boolean {
+  if (!r?.monitors) return false;
+  const ids = Object.keys(r.monitors);
+  return ids.length > 0 && !(ids.length === 1 && ids[0] === DEFAULT_MONITOR_ID);
 }
 
 const server = Bun.serve({
@@ -175,6 +183,20 @@ const server = Bun.serve({
       },
     },
 
+    "/api/rooms/:roomId/monitors/:monitorId": {
+      DELETE: async (req) => {
+        const { roomId, monitorId } = req.params;
+        if (!ROOM_ID_RE.test(roomId)) return badRequest("invalid roomId");
+        if (!MONITOR_ID_RE.test(monitorId)) return badRequest("invalid monitorId");
+        const removed = await deleteMonitor(roomId, monitorId);
+        if (!removed) {
+          return Response.json({ error: "no such monitor" }, { status: 404 });
+        }
+        console.log(`deleted monitor ${roomId}/${monitorId}`);
+        return Response.json({ ok: true, deleted: { roomId, monitorId } });
+      },
+    },
+
     "/api/rooms/:roomId/usage": async (req) => {
       const { roomId } = req.params;
       if (!ROOM_ID_RE.test(roomId)) return badRequest("invalid roomId");
@@ -274,6 +296,18 @@ async function ingest(
 
   if (!norm.hasReading) {
     return badRequest("no recognizable Shelly fields");
+  }
+
+  const cfg = await readRooms();
+  const room = cfg.rooms[roomId];
+  if (monitorId === DEFAULT_MONITOR_ID && roomUsesNamedMonitors(room)) {
+    return Response.json(
+      {
+        error:
+          `room ${roomId} uses named monitors; POST to /api/ingest/${roomId}/<monitorId> instead`,
+      },
+      { status: 400 },
+    );
   }
 
   // Auto-register: the Shelly is the source of truth for "what (room, monitor)
