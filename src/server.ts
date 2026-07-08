@@ -19,6 +19,7 @@ import {
 } from "./lib/monitors.ts";
 import { normalizeShelly } from "./lib/shelly.ts";
 import {
+  computeAllRoomSummaries,
   computeSeries,
   computeUsage,
   latestReading,
@@ -76,36 +77,24 @@ const server = Bun.serve({
 
     "/api/rooms": async () => {
       const cfg = await readRooms();
-      const out = await Promise.all(
-        Object.entries(cfg.rooms).map(async ([id, r]) => {
-          const current = r.leases.find((l) => l.endDate === null) ?? null;
-          const leaseFrom = current
-            ? new Date(current.startDate + "T00:00:00Z")
-            : new Date(0);
-          const monthFrom = new Date();
-          monthFrom.setUTCDate(1);
-          monthFrom.setUTCHours(0, 0, 0, 0);
-          const now = new Date();
+      const now = new Date();
+      const summaries = await computeAllRoomSummaries(cfg, now);
 
-          const [leaseUsage, monthUsage, latest] = await Promise.all([
-            computeUsage({ room: id, from: leaseFrom, to: now }),
-            computeUsage({ room: id, from: monthFrom, to: now }),
-            latestReading(id),
-          ]);
-
-          return {
-            id,
-            label: r.label,
-            currentTenant: current?.tenant ?? null,
-            leaseStart: current?.startDate ?? null,
-            leaseKWh: leaseUsage.energyKWh,
-            monthKWh: monthUsage.energyKWh,
-            powerW: latest?.powerW ?? null,
-            lastSeen: latest?.ts ?? null,
-            monitors: monitorList(r),
-          };
-        }),
-      );
+      const out = Object.entries(cfg.rooms).map(([id, r]) => {
+        const current = r.leases.find((l) => l.endDate === null) ?? null;
+        const s = summaries.get(id)!;
+        return {
+          id,
+          label: r.label,
+          currentTenant: current?.tenant ?? null,
+          leaseStart: current?.startDate ?? null,
+          leaseKWh: s.leaseKWh,
+          monthKWh: s.monthKWh,
+          powerW: s.powerW,
+          lastSeen: s.lastSeen,
+          monitors: monitorList(r),
+        };
+      });
       return Response.json({ rooms: out });
     },
 

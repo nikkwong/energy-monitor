@@ -226,14 +226,22 @@ function formatBucketLabel(iso: string, bucket: "hour" | "day" | "month"): strin
 }
 
 async function main(): Promise<void> {
-  void startOfMonthLocal; // imported for symmetry, not needed here yet
+  void startOfMonthLocal;
+  // Room cards first (one server-side pass), chart loads separately so the
+  // page feels responsive even when readings.jsonl is large.
   const { rooms } = await jget<{ rooms: RoomSummary[] }>("/api/rooms");
   renderTotals(rooms);
   renderRooms(rooms);
 
   let bucket: "hour" | "day" | "month" = "day";
   let days = 30;
-  await renderChart(bucket, days);
+  void renderChart(bucket, days).catch((err) => {
+    console.error("chart failed:", err);
+    document.getElementById("totalChart")?.parentElement?.insertAdjacentHTML(
+      "afterend",
+      `<div class="error">Chart failed to load: ${escapeHtml(String(err))}</div>`,
+    );
+  });
 
   const toggle = document.getElementById("ranges")!;
   toggle.addEventListener("click", async (e) => {

@@ -1,4 +1,5 @@
-import { iterReadings, readRooms } from "./data.ts";
+import { stat } from "node:fs/promises";
+import { iterReadings, paths, readRooms } from "./data.ts";
 import { visibleMonitorIds } from "./monitors.ts";
 import type { Reading, RoomsConfig } from "./types.ts";
 
@@ -27,6 +28,13 @@ export type LatestReading = {
   monitors: Record<string, { ts: string; powerW: number; totalEnergyWh: number }>;
 };
 
+export type RoomSummaryMetrics = {
+  leaseKWh: number;
+  monthKWh: number;
+  powerW: number | null;
+  lastSeen: string | null;
+};
+
 function bucketStartUTC(d: Date, bucket: Bucket): Date {
   const out = new Date(d.getTime());
   if (bucket === "hour") {
@@ -40,16 +48,6 @@ function bucketStartUTC(d: Date, bucket: Bucket): Date {
   return out;
 }
 
-/**
- * When a room has an explicit `monitors` map in `rooms.json`, only readings
- * whose `monitor` id is listed there are counted. This lets operators drop a
- * ghost feed (e.g. a typo'd `default` left over from mock ingest) by deleting
- * its key from `rooms.json` — historical lines stay in the JSONL but stop
- * affecting totals and the UI.
- *
- * Rooms with no `monitors` block (legacy / not yet curated) accept every
- * monitor id so old shorthand `/api/ingest/:roomId` → `default` keeps working.
- */
 function monitorAllowlist(cfg: RoomsConfig): Map<string, Set<string> | null> {
   const out = new Map<string, Set<string> | null>();
   for (const [roomId, room] of Object.entries(cfg.rooms)) {
@@ -68,57 +66,158 @@ function readingAllowed(
   return allow.has(r.monitor);
 }
 
-/**
- * Pulls every reading for `room` (or all rooms if undefined), sorted by ts.
- * For our scale (hundreds of readings/day per room) this is fine. If the
- * stream grows past ~10MB we should switch to monthly shards.
- *
- * For house-wide queries (no specific `room`), readings belonging to rooms
- * that were deleted from `rooms.json` are filtered out. `readings.jsonl` is
- * append-only so the data physically remains on disk, but dropping it from
- * aggregation makes the deletion visible everywhere a dashboard cares about
- * (house total, summaries) without rewriting the file.
- */
-async function loadSorted(room?: string): Promise<Reading[]> {
-  const cfg = await readRooms();
-  let allowedRooms: Set<string> | null = null;
-  const monitorLists = monitorAllowlist(cfg);
+function counterKey(r: Reading): string {
+  return `${r.room}|${r.monitor}`;
+}
 
-  if (!room) {
-    allowedRooms = new Set(Object.keys(cfg.rooms));
+function roomFromCounterKey(key: string): string {
+  const sep = key.indexOf("|");
+  return sep === -1 ? key : key.slice(0, sep);
+}
+
+// In-memory cache keyed on readings.jsonl + rooms.json mtimes. Invalidates
+// automatically when either file changes (append, prune, lease edit).
+let cacheKey = "";
+let cachedReadings: Reading[] = [];
+
+async function fileMtimeMs(path: string): Promise<number> {
+  try {
+    const s = await stat(path);
+    return s.mtimeMs;
+  } catch {
+    return 0;
   }
+}
+
+/**
+ * Load, filter, and sort the full telemetry stream once. Every aggregator
+ * reuses this so a homepage with 24 rooms does one disk pass, not 72+.
+ */
+async function loadAllReadings(): Promise<Reading[]> {
+  const [readingsMtime, roomsMtime] = await Promise.all([
+    fileMtimeMs(paths.readings),
+    fileMtimeMs(paths.rooms),
+  ]);
+  const key = `${readingsMtime}:${roomsMtime}`;
+  if (key === cacheKey) return cachedReadings;
+
+  const cfg = await readRooms();
+  const allowedRooms = new Set(Object.keys(cfg.rooms));
+  const monitorLists = monitorAllowlist(cfg);
 
   const out: Reading[] = [];
   for await (const r of iterReadings()) {
-    if (room) {
-      if (r.room !== room) continue;
-    } else if (allowedRooms && !allowedRooms.has(r.room)) {
-      continue;
-    }
+    if (!allowedRooms.has(r.room)) continue;
     if (!readingAllowed(r, monitorLists)) continue;
     out.push(r);
   }
   out.sort((a, b) => a.ts.localeCompare(b.ts));
+
+  cacheKey = key;
+  cachedReadings = out;
   return out;
 }
 
+async function loadSorted(room?: string): Promise<Reading[]> {
+  const all = await loadAllReadings();
+  if (!room) return all;
+  return all.filter((r) => r.room === room);
+}
+
+function leaseStartMs(room: RoomsConfig["rooms"][string]): number {
+  const current = room.leases.find((l) => l.endDate === null);
+  return current
+    ? new Date(current.startDate + "T00:00:00Z").getTime()
+    : 0;
+}
+
+function monthStartMs(now: Date): number {
+  const monthFrom = new Date(now);
+  monthFrom.setUTCDate(1);
+  monthFrom.setUTCHours(0, 0, 0, 0);
+  return monthFrom.getTime();
+}
+
 /**
- * Compute kWh consumed in [from, to) by walking each monitor's cumulative
- * counter. Deltas are computed per `(room, monitor)` so two devices in the
- * same room don't trample each other's counters. Negative deltas (would
- * indicate a meter reset or out-of-order report) are ignored.
- *
- * The delta from reading N-1 -> N is attributed to N's timestamp. That's a
- * standard convention and lines up with how the meter "reports" newly-accrued
- * energy.
+ * Single-pass metrics for every room — powers GET /api/rooms. Replaces the
+ * old pattern of 3 full-file scans per room (lease + month + latest).
  */
+export async function computeAllRoomSummaries(
+  cfg: RoomsConfig,
+  now = new Date(),
+): Promise<Map<string, RoomSummaryMetrics>> {
+  const nowMs = now.getTime();
+  const monthFromMs = monthStartMs(now);
+  const leaseFromMs = new Map<string, number>();
+  const leaseKWh = new Map<string, number>();
+  const monthKWh = new Map<string, number>();
+  const out = new Map<string, RoomSummaryMetrics>();
+
+  for (const [roomId, room] of Object.entries(cfg.rooms)) {
+    leaseFromMs.set(roomId, leaseStartMs(room));
+    leaseKWh.set(roomId, 0);
+    monthKWh.set(roomId, 0);
+    out.set(roomId, {
+      leaseKWh: 0,
+      monthKWh: 0,
+      powerW: null,
+      lastSeen: null,
+    });
+  }
+
+  const lastCounter = new Map<string, number>();
+  const latestByKey = new Map<string, Reading>();
+  const readings = await loadAllReadings();
+
+  for (const r of readings) {
+    const key = counterKey(r);
+    const prevLatest = latestByKey.get(key);
+    if (!prevLatest || r.ts > prevLatest.ts) latestByKey.set(key, r);
+
+    const prev = lastCounter.get(key);
+    lastCounter.set(key, r.totalEnergyWh);
+    if (prev === undefined) continue;
+
+    const delta = r.totalEnergyWh - prev;
+    if (delta <= 0) continue;
+
+    const tsMs = new Date(r.ts).getTime();
+    const kwh = delta / 1000;
+    const roomId = r.room;
+
+    const lf = leaseFromMs.get(roomId);
+    if (lf !== undefined && tsMs >= lf && tsMs < nowMs) {
+      leaseKWh.set(roomId, (leaseKWh.get(roomId) ?? 0) + kwh);
+    }
+    if (tsMs >= monthFromMs && tsMs < nowMs) {
+      monthKWh.set(roomId, (monthKWh.get(roomId) ?? 0) + kwh);
+    }
+  }
+
+  for (const [key, r] of latestByKey) {
+    const roomId = roomFromCounterKey(key);
+    const entry = out.get(roomId);
+    if (!entry) continue;
+    entry.powerW = (entry.powerW ?? 0) + (r.powerW || 0);
+    if (!entry.lastSeen || r.ts > entry.lastSeen) entry.lastSeen = r.ts;
+  }
+
+  for (const [roomId, entry] of out) {
+    entry.leaseKWh = leaseKWh.get(roomId) ?? 0;
+    entry.monthKWh = monthKWh.get(roomId) ?? 0;
+    if (!entry.lastSeen) entry.powerW = null;
+  }
+
+  return out;
+}
+
 export async function computeUsage(opts: {
   room?: string;
   from: Date;
   to: Date;
 }): Promise<UsageSummary> {
   const readings = await loadSorted(opts.room);
-  const last: Map<string, number> = new Map(); // key: room|monitor
+  const last = new Map<string, number>();
   const monitors: Record<string, number> = {};
   let totalKWh = 0;
 
@@ -126,7 +225,7 @@ export async function computeUsage(opts: {
   const toMs = opts.to.getTime();
 
   for (const r of readings) {
-    const key = `${r.room}|${r.monitor}`;
+    const key = counterKey(r);
     const prev = last.get(key);
     last.set(key, r.totalEnergyWh);
     if (prev === undefined) continue;
@@ -156,14 +255,14 @@ export async function computeSeries(opts: {
   bucket: Bucket;
 }): Promise<SeriesPoint[]> {
   const readings = await loadSorted(opts.room);
-  const last: Map<string, number> = new Map();
-  const buckets = new Map<number, number>(); // bucket-start-ms -> kWh
+  const last = new Map<string, number>();
+  const buckets = new Map<number, number>();
 
   const fromMs = opts.from.getTime();
   const toMs = opts.to.getTime();
 
   for (const r of readings) {
-    const key = `${r.room}|${r.monitor}`;
+    const key = counterKey(r);
     const prev = last.get(key);
     last.set(key, r.totalEnergyWh);
     if (prev === undefined) continue;
@@ -176,7 +275,6 @@ export async function computeSeries(opts: {
     buckets.set(bucketKey, (buckets.get(bucketKey) ?? 0) + delta / 1000);
   }
 
-  // Fill empty buckets so the chart line is continuous.
   const out: SeriesPoint[] = [];
   const cursor = bucketStartUTC(opts.from, opts.bucket);
   const end = opts.to;
@@ -194,18 +292,10 @@ export async function computeSeries(opts: {
   return out;
 }
 
-/**
- * The most recent reading per monitor, plus the room-wide power sum. Used by
- * the "Right now" card and the freshness dot — a room is "live" if any of its
- * monitors have reported recently.
- */
 export async function latestReading(room: string): Promise<LatestReading | null> {
-  const cfg = await readRooms();
-  const monitorLists = monitorAllowlist(cfg);
   const perMonitor = new Map<string, Reading>();
-  for await (const r of iterReadings()) {
-    if (r.room !== room) continue;
-    if (!readingAllowed(r, monitorLists)) continue;
+  const readings = await loadSorted(room);
+  for (const r of readings) {
     const cur = perMonitor.get(r.monitor);
     if (!cur || r.ts > cur.ts) perMonitor.set(r.monitor, r);
   }
