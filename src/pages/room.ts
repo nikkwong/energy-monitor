@@ -17,6 +17,10 @@ import {
   jget,
   jpost,
 } from "./common.ts";
+import {
+  displayMonitorLabel,
+  visibleMonitorIds,
+} from "../lib/monitors.ts";
 
 Chart.register(
   LineController,
@@ -115,13 +119,12 @@ function renderHeader(data: UsageResp): void {
     : `<span class="muted">no active lease</span>`;
 
   // Each monitor with a known IP becomes a clickable link to its admin UI.
-  // Shown unconditionally so even single-monitor rooms get the click-through.
   const monitors = data.room.monitors ?? {};
-  const devicePieces = Object.keys(monitors)
+  const devicePieces = visibleMonitorIds(monitors)
     .sort()
     .map((id) => {
       const m = monitors[id]!;
-      const label = escapeHtml(m.label || id);
+      const label = escapeHtml(displayMonitorLabel(m, id));
       if (!m.ip) return label;
       const ip = escapeHtml(m.ip);
       return `<a href="http://${ip}" target="_blank" rel="noopener" title="Shelly admin · ${ip}">${label}</a>`;
@@ -136,7 +139,7 @@ function renderHeader(data: UsageResp): void {
 }
 
 function monitorLabel(room: Room, id: string): string {
-  return room.monitors?.[id]?.label ?? id;
+  return displayMonitorLabel(room.monitors?.[id], id);
 }
 
 /**
@@ -325,7 +328,7 @@ function renderStats(data: UsageResp): void {
   const cls = freshnessClass(latest?.ts ?? null);
 
   // Per-monitor breakdowns only add value once a room has more than one feed.
-  const monthIds = Object.keys(data.monthUsage.monitors);
+  const monthIds = visibleMonitorIds(data.room.monitors);
   const monthBreakdown =
     monthIds.length > 1
       ? monthIds
@@ -337,7 +340,7 @@ function renderStats(data: UsageResp): void {
           .join(" · ")
       : "";
 
-  const liveIds = latest ? Object.keys(latest.monitors) : [];
+  const liveIds = latest ? visibleMonitorIds(data.room.monitors) : [];
   const liveBreakdown =
     latest && liveIds.length > 1
       ? liveIds

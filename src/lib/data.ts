@@ -1,6 +1,7 @@
 import { mkdir, readFile, writeFile, appendFile, rename } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { Lease, Reading, RoomsConfig } from "./types.ts";
+import { DEFAULT_MONITOR_ID, roomUsesNamedMonitors } from "./monitors.ts";
 
 const DATA_DIR = resolve(process.cwd(), "data");
 const ROOMS_PATH = resolve(DATA_DIR, "rooms.json");
@@ -283,8 +284,18 @@ export async function ensureRoomAndMonitor(
 
     const room = cfg.rooms[roomId];
     if (!room.monitors) room.monitors = {};
+    if (
+      monitorId === DEFAULT_MONITOR_ID &&
+      roomUsesNamedMonitors(room) &&
+      !room.monitors[DEFAULT_MONITOR_ID]
+    ) {
+      // Ghost default from mock/legacy ingest — don't re-add to config.
+      return { newRoom: false, newMonitor: false };
+    }
     if (!room.monitors[monitorId]) {
-      room.monitors[monitorId] = { label: monitorId };
+      room.monitors[monitorId] = {
+        label: monitorId === DEFAULT_MONITOR_ID ? "Mains" : monitorId,
+      };
       newMonitor = true;
       dirty = true;
     }

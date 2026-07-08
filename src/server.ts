@@ -11,6 +11,12 @@ import {
   readRooms,
   startLease,
 } from "./lib/data.ts";
+import {
+  DEFAULT_MONITOR_ID,
+  filterMonitorRecord,
+  roomUsesNamedMonitors,
+  sanitizeRoom,
+} from "./lib/monitors.ts";
 import { normalizeShelly } from "./lib/shelly.ts";
 import {
   computeSeries,
@@ -23,7 +29,6 @@ import type { Reading, Room } from "./lib/types.ts";
 const PORT = Number(process.env.PORT ?? 3000);
 const ROOM_ID_RE = /^[A-Za-z0-9_-]{1,16}$/;
 const MONITOR_ID_RE = /^[A-Za-z0-9_-]{1,16}$/;
-const DEFAULT_MONITOR_ID = "default";
 
 function badRequest(msg: string): Response {
   return Response.json({ error: msg }, { status: 400 });
@@ -45,13 +50,6 @@ function monitorList(r: Room): string[] {
     return Object.keys(r.monitors);
   }
   return [DEFAULT_MONITOR_ID];
-}
-
-/** True when the room already tracks named feeds and should not accept shorthand `default` ingest. */
-function roomUsesNamedMonitors(r: Room | undefined): boolean {
-  if (!r?.monitors) return false;
-  const ids = Object.keys(r.monitors);
-  return ids.length > 0 && !(ids.length === 1 && ids[0] === DEFAULT_MONITOR_ID);
 }
 
 const server = Bun.serve({
@@ -217,12 +215,29 @@ const server = Bun.serve({
         computeUsage({ room: roomId, from: monthFrom, to: now }),
         latestReading(roomId),
       ]);
+      const roomOut = sanitizeRoom({ id: roomId, ...r });
+      const latestOut = latest
+        ? {
+            ...latest,
+            monitors: filterMonitorRecord(latest.monitors, roomOut),
+            powerW: Object.values(filterMonitorRecord(latest.monitors, roomOut)).reduce(
+              (s, m) => s + (m.powerW || 0),
+              0,
+            ),
+          }
+        : null;
       return Response.json({
-        room: { id: roomId, ...r },
+        room: roomOut,
         currentLease: current,
-        leaseUsage: lease,
-        monthUsage: month,
-        latest,
+        leaseUsage: {
+          ...lease,
+          monitors: filterMonitorRecord(lease.monitors, roomOut),
+        },
+        monthUsage: {
+          ...month,
+          monitors: filterMonitorRecord(month.monitors, roomOut),
+        },
+        latest: latestOut,
       });
     },
 

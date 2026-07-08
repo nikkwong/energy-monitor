@@ -1,4 +1,5 @@
 import { iterReadings, readRooms } from "./data.ts";
+import { visibleMonitorIds } from "./monitors.ts";
 import type { Reading, RoomsConfig } from "./types.ts";
 
 export type Bucket = "hour" | "day" | "month";
@@ -52,7 +53,7 @@ function bucketStartUTC(d: Date, bucket: Bucket): Date {
 function monitorAllowlist(cfg: RoomsConfig): Map<string, Set<string> | null> {
   const out = new Map<string, Set<string> | null>();
   for (const [roomId, room] of Object.entries(cfg.rooms)) {
-    const ids = room.monitors ? Object.keys(room.monitors) : [];
+    const ids = visibleMonitorIds(room.monitors);
     out.set(roomId, ids.length > 0 ? new Set(ids) : null);
   }
   return out;
