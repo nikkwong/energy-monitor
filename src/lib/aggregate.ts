@@ -1,6 +1,6 @@
-import { iterReadings, readRooms } from "./data.ts";
+import { iterDailyRollups, iterReadings, readRooms } from "./data.ts";
 import { visibleMonitorIds } from "./monitors.ts";
-import type { Reading, RoomsConfig } from "./types.ts";
+import type { DailyRollup, Reading, RoomsConfig } from "./types.ts";
 
 export type Bucket = "hour" | "day" | "month";
 
@@ -98,6 +98,20 @@ function shouldUseReading(
   return readingAllowed(r, ctx.monitorLists);
 }
 
+function shouldUseRollup(
+  r: DailyRollup,
+  ctx: { allowedRooms: Set<string>; monitorLists: Map<string, Set<string> | null> },
+  room?: string,
+): boolean {
+  if (room) {
+    if (r.room !== room) return false;
+  } else if (!ctx.allowedRooms.has(r.room)) {
+    return false;
+  }
+  const allow = ctx.monitorLists.get(r.room);
+  return !allow || allow.has(r.monitor);
+}
+
 function leaseStartMs(room: RoomsConfig["rooms"][string]): number {
   const current = room.leases.find((l) => l.endDate === null);
   return current
@@ -142,6 +156,25 @@ export async function computeAllRoomSummaries(
   const lastCounter = new Map<string, number>();
   const latestByKey = new Map<string, Reading>();
   const monitorLists = monitorAllowlist(cfg);
+  const ctx = {
+    allowedRooms: new Set(Object.keys(cfg.rooms)),
+    monitorLists,
+  };
+
+  for await (const row of iterDailyRollups({
+    from: new Date(0),
+    to: now,
+  })) {
+    if (!shouldUseRollup(row, ctx)) continue;
+    const tsMs = new Date(row.date + "T00:00:00Z").getTime();
+    const lf = leaseFromMs.get(row.room);
+    if (lf !== undefined && tsMs >= lf && tsMs < nowMs) {
+      leaseKWh.set(row.room, (leaseKWh.get(row.room) ?? 0) + row.energyKWh);
+    }
+    if (tsMs >= monthFromMs && tsMs < nowMs) {
+      monthKWh.set(row.room, (monthKWh.get(row.room) ?? 0) + row.energyKWh);
+    }
+  }
 
   // Stream in append order instead of loading + sorting the full JSONL. Shelly
   // reports are append-only and effectively chronological; keeping this
@@ -203,7 +236,15 @@ export async function computeUsage(opts: {
   const fromMs = opts.from.getTime();
   const toMs = opts.to.getTime();
 
-  for await (const r of iterReadings()) {
+  for await (const row of iterDailyRollups({ from: opts.from, to: opts.to })) {
+    if (!shouldUseRollup(row, ctx, opts.room)) continue;
+    totalKWh += row.energyKWh;
+    if (opts.room) {
+      monitors[row.monitor] = (monitors[row.monitor] ?? 0) + row.energyKWh;
+    }
+  }
+
+  for await (const r of iterReadings({ from: opts.from, to: opts.to })) {
     if (!shouldUseReading(r, ctx, opts.room)) continue;
     const key = counterKey(r);
     const prev = last.get(key);
@@ -241,7 +282,16 @@ export async function computeSeries(opts: {
   const fromMs = opts.from.getTime();
   const toMs = opts.to.getTime();
 
-  for await (const r of iterReadings()) {
+  for await (const row of iterDailyRollups({ from: opts.from, to: opts.to })) {
+    if (!shouldUseRollup(row, ctx, opts.room)) continue;
+    const bucketKey = bucketStartUTC(
+      new Date(row.date + "T00:00:00Z"),
+      opts.bucket,
+    ).getTime();
+    buckets.set(bucketKey, (buckets.get(bucketKey) ?? 0) + row.energyKWh);
+  }
+
+  for await (const r of iterReadings({ from: opts.from, to: opts.to })) {
     if (!shouldUseReading(r, ctx, opts.room)) continue;
     const key = counterKey(r);
     const prev = last.get(key);

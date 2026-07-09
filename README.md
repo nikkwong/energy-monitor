@@ -82,13 +82,43 @@ Identity and lease history. Edit by hand or via a future admin endpoint.
 The current tenant is the lease with `endDate: null`. To rotate tenants, set
 `endDate` on the existing lease and append a new one.
 
-### `data/readings.jsonl` (append-only telemetry)
+### `data/readings/YYYY-MM.jsonl` (append-only telemetry)
 
-One JSON object per line. Created on first webhook. Never edited in-place.
+One JSON object per line, sharded by UTC month. Created on first webhook for
+that month. Never edited in-place.
 
 ```jsonl
-{"ts":"2026-05-01T07:00:00Z","room":"301","channels":[{"idx":0,"powerW":120.5,"totalEnergyWh":12345.67}],"raw":{...}}
+{"ts":"2026-05-01T07:00:00Z","room":"301","monitor":"south","powerW":120.5,"totalEnergyWh":12345.67,"raw":{...}}
 ```
+
+Older deployments may still have a legacy `data/readings.jsonl`; the app reads
+it for compatibility. Migrate it once so requests no longer have to scan one
+large file:
+
+```bash
+bun run migrate:readings          # dry run
+bun run migrate:readings --apply  # write shards, move readings.jsonl aside
+```
+
+### `data/rollups/daily.jsonl` (old-data summaries)
+
+For raw shards older than your retention window, roll them up to daily kWh and
+gzip the raw shard:
+
+```bash
+# Archive shards older than July 2025 (dry run first)
+bun run rollup --before 2025-07
+bun run rollup --before 2025-07 --apply
+```
+
+This writes daily rows like:
+
+```jsonl
+{"date":"2025-06-01","room":"301","monitor":"south","energyKWh":4.21}
+```
+
+Archived raw shards land in `data/archive/readings/*.jsonl.gz`. The dashboard
+uses daily rollups for old usage and raw monthly shards for recent data.
 
 ### Why two files instead of one nested blob?
 
@@ -100,8 +130,8 @@ One JSON object per line. Created on first webhook. Never edited in-place.
 - Usage per lease / per month is **computed on demand** by walking the
   cumulative-energy counter delta inside a window, so adjusting a lease
   boundary just works without re-bucketing anything.
-- If readings outgrow a single file (~10MB+), shard by month:
-  `data/readings-2026-05.jsonl`. The aggregator just needs to glob.
+- Readings are sharded by month, so normal queries only open the raw shards
+  they need plus daily rollups for old archived data.
 
 ## Project layout
 
@@ -122,7 +152,9 @@ src/
     styles.css
 data/
   rooms.json          # leases (in git)
-  readings.jsonl      # telemetry (gitignored, created at runtime)
+  readings/           # monthly raw telemetry shards (gitignored)
+  rollups/            # daily old-data summaries (gitignored)
+  archive/readings/   # gzipped old raw shards (gitignored)
 ```
 
 ## Deployment notes

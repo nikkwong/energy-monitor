@@ -9,7 +9,11 @@ dist/
 
 # the JSONL telemetry stream is generated at runtime; keep rooms.json in git
 data/readings.jsonl
+data/readings.jsonl.migrated-*
 data/readings-*.jsonl
+data/readings/
+data/rollups/
+data/archive/
 data/*.tmp
 
 .DS_Store

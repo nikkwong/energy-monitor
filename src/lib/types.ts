@@ -80,3 +80,15 @@ export type Reading = {
   /** Optional raw Shelly payload, kept for debugging. */
   raw?: unknown;
 };
+
+/**
+ * Precomputed daily energy total. Rollups are used for old data after raw
+ * monthly shards have been gzipped/archived.
+ */
+export type DailyRollup = {
+  /** UTC date (YYYY-MM-DD). */
+  date: string;
+  room: string;
+  monitor: string;
+  energyKWh: number;
+};

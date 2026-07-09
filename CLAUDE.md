@@ -23,20 +23,28 @@ Not a multi-tenant SaaS. One house, a handful of rooms, one or more
 
 ## Data model — read this before changing anything storage-related
 
-Two files in `data/`, deliberately separate:
+Storage in `data/` is deliberately split by write pattern:
 
 | File | Pattern | Contains |
 |---|---|---|
 | `data/rooms.json` | atomic read-modify-write (write to `.tmp`, rename) | Operator-editable overlay metadata: room/monitor labels, lease history. Auto-grown on first POST from a new `(room, monitor)` pair. |
-| `data/readings.jsonl` | append-only NDJSON | One Shelly reading per line, raw payload preserved. The Shellys are the source of truth for "what monitors exist". |
+| `data/readings/YYYY-MM.jsonl` | append-only NDJSON shards | One Shelly reading per line, raw payload preserved. The Shellys are the source of truth for "what monitors exist". |
+| `data/rollups/daily.jsonl` | append-only NDJSON | Daily kWh totals for old raw shards that have been gzipped/archived. |
 
 **Invariants**:
 
 - All writes go through `src/lib/data.ts` and are serialized through a single
  in-process promise chain so `appendReading`, `writeRooms`, and
  `ensureRoomAndMonitor` never interleave.
-- `readings.jsonl` is **never** rewritten in place. If a reading is bad, it's
- ignored at parse time. To purge data, append a new shard or rotate.
+- Raw reading shards are **never** rewritten in place. If a reading is bad, it's
+ ignored at parse time. New ingests append to `data/readings/YYYY-MM.jsonl`.
+- Legacy `data/readings.jsonl` is still read for compatibility. Run
+ `bun run migrate:readings --apply` once in production to split it into
+ monthly shards and move the monolith out of the request path.
+- Old shards can be rolled up and gzipped with
+ `bun run rollup --before YYYY-MM --apply`. This appends daily totals to
+ `data/rollups/daily.jsonl` and archives raw shards under
+ `data/archive/readings/*.jsonl.gz`.
 - `ensureRoomAndMonitor` is strictly additive: it fills in missing `(room,
  monitor)` entries with default labels but never overwrites operator-edited
  fields. So once an operator has curated `rooms.json` (lease info, friendly
@@ -44,11 +52,12 @@ Two files in `data/`, deliberately separate:
 - A "current lease" is the entry with `endDate === null`. Exactly zero or one
  per room. To turn over a tenant, set the existing lease's `endDate` and append a new one.
 
-**Computing usage**: we walk readings in chronological order and sum
+**Computing usage**: raw shards are walked in append order and we sum
 **positive deltas** of `totalEnergyWh` per `(room, monitor)` whose timestamp
-falls in `[from, to)`. We trust the meter's monotonic counter and ignore
-negative deltas (would indicate a meter reset). Don't replace this with
-"average power × duration" — the cumulative counter is more accurate.
+falls in `[from, to)`. Daily rollups are added directly as kWh. We trust the
+meter's monotonic counter and ignore negative deltas (would indicate a meter
+reset). Don't replace this with "average power × duration" — the cumulative
+counter is more accurate.
 
 **Reading shape**: flat, one tuple per device report:
 `{ ts, room, monitor, powerW, totalEnergyWh, raw? }`. Multi-channel devices
@@ -105,8 +114,8 @@ room validation to that route — keep the HTML route purely static.
    pass an explicit `from` from the client.
 4. **Concurrent writes.** Use `appendReading` / `writeRooms` from `data.ts`,
    never write the files directly.
-5. **`data/readings.jsonl` is gitignored.** `data/rooms.json` is checked in.
-   Don't accidentally swap that.
+5. **Telemetry is gitignored.** `data/rooms.json` is checked in; raw shards,
+   rollups, archives, and legacy `readings.jsonl` are not.
 
 ## Deployment
 
@@ -125,7 +134,7 @@ outside the repo (typically `/var/lib/5214`, symlinked).
 - **Delete a room** (e.g. test data left in prod): click the × on the
  room's card on the homepage (or `curl -X DELETE
  /api/rooms/<roomId>`). Removes the entry from `rooms.json`; historical
- readings stay in `readings.jsonl` but are filtered out of every
+ readings stay on disk but are filtered out of every
  aggregation, so the room silently disappears. **Important**: if the
  Shelly is still POSTing to that room id, it'll auto-register on its next
  POST. Stop or re-flash the device first if you want the deletion to
@@ -134,6 +143,9 @@ outside the repo (typically `/var/lib/5214`, symlinked).
 - **Rotate a tenant**: set the active lease's `endDate` to today, append a new
   lease with `endDate: null`. Past usage stays attributed to the old tenant
   because aggregation windows the readings by `[lease.startDate, lease.endDate)`.
-- **Inspect raw Shelly bodies**: `tail -f data/readings.jsonl | jq`.
+- **Inspect raw Shelly bodies**:
+ `tail -f data/readings/$(date -u +%Y-%m).jsonl | jq`.
+- **Migrate legacy telemetry**: `bun run migrate:readings --apply`.
+- **Roll up old telemetry**: `bun run rollup --before 2025-07 --apply`.
 - **Force a test reading**:
  `curl -X POST http://localhost:3000/api/ingest/301/default -H 'content-type: application/json' -d '{"params":{"ts":1714521600,"em1:0":{"act_power":120},"em1data:0":{"total_act_energy":12345}}}'`

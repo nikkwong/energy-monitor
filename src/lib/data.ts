@@ -1,11 +1,21 @@
-import { mkdir, readFile, writeFile, appendFile, rename } from "node:fs/promises";
+import {
+  appendFile,
+  mkdir,
+  readFile,
+  readdir,
+  rename,
+  writeFile,
+} from "node:fs/promises";
 import { resolve } from "node:path";
-import type { Lease, Reading, RoomsConfig } from "./types.ts";
+import type { DailyRollup, Lease, Reading, RoomsConfig } from "./types.ts";
 import { DEFAULT_MONITOR_ID, roomUsesNamedMonitors } from "./monitors.ts";
 
 const DATA_DIR = resolve(process.cwd(), "data");
 const ROOMS_PATH = resolve(DATA_DIR, "rooms.json");
+const READINGS_DIR = resolve(DATA_DIR, "readings");
 const READINGS_PATH = resolve(DATA_DIR, "readings.jsonl");
+const ROLLUPS_DIR = resolve(DATA_DIR, "rollups");
+const DAILY_ROLLUP_PATH = resolve(ROLLUPS_DIR, "daily.jsonl");
 
 // Single in-process write queue. Serializes appends and atomic rewrites so we
 // never interleave a reading append with a rooms.json rewrite, and so concurrent
@@ -22,6 +32,47 @@ function enqueue<T>(fn: () => Promise<T>): Promise<T> {
 
 async function ensureDataDir(): Promise<void> {
   await mkdir(DATA_DIR, { recursive: true });
+}
+
+function monthKeyFromDate(d: Date): string {
+  return d.toISOString().slice(0, 7);
+}
+
+function monthKeyFromReading(r: Reading): string {
+  const d = new Date(r.ts);
+  if (Number.isNaN(d.getTime())) return monthKeyFromDate(new Date());
+  return monthKeyFromDate(d);
+}
+
+function monthlyReadingPath(month: string): string {
+  return resolve(READINGS_DIR, `${month}.jsonl`);
+}
+
+function previousMonthKey(month: string): string {
+  const d = new Date(month + "-01T00:00:00Z");
+  d.setUTCMonth(d.getUTCMonth() - 1);
+  return monthKeyFromDate(d);
+}
+
+function nextMonthKey(month: string): string {
+  const d = new Date(month + "-01T00:00:00Z");
+  d.setUTCMonth(d.getUTCMonth() + 1);
+  return monthKeyFromDate(d);
+}
+
+function monthKeysForRange(from?: Date, to?: Date): Set<string> | null {
+  if (!from && !to) return null;
+  const start = monthKeyFromDate(from ?? new Date(0));
+  const end = monthKeyFromDate(to ?? new Date());
+  const out = new Set<string>();
+  // Include the previous month so cumulative-counter deltas at the start of
+  // the requested range have a baseline reading.
+  let cursor = previousMonthKey(start);
+  while (cursor <= end) {
+    out.add(cursor);
+    cursor = nextMonthKey(cursor);
+  }
+  return out;
 }
 
 export async function readRooms(): Promise<RoomsConfig> {
@@ -54,8 +105,10 @@ export async function writeRooms(cfg: RoomsConfig): Promise<void> {
 
 export async function appendReading(r: Reading): Promise<void> {
   await ensureDataDir();
+  await mkdir(READINGS_DIR, { recursive: true });
   const line = JSON.stringify(r) + "\n";
-  await enqueue(() => appendFile(READINGS_PATH, line, "utf8"));
+  const path = monthlyReadingPath(monthKeyFromReading(r));
+  await enqueue(() => appendFile(path, line, "utf8"));
 }
 
 /**
@@ -366,13 +419,8 @@ function coerceReading(parsed: unknown): Reading | null {
   return null;
 }
 
-/**
- * Stream readings in file order. The file is append-only, so this is roughly
- * chronological — but callers that need strict order should sort by `ts`.
- */
-export async function* iterReadings(): AsyncGenerator<Reading> {
-  await ensureDataDir();
-  const file = Bun.file(READINGS_PATH);
+async function* iterReadingFile(path: string): AsyncGenerator<Reading> {
+  const file = Bun.file(path);
   if (!(await file.exists())) return;
 
   const decoder = new TextDecoder();
@@ -405,8 +453,98 @@ export async function* iterReadings(): AsyncGenerator<Reading> {
   }
 }
 
+async function monthlyReadingFiles(opts?: {
+  from?: Date;
+  to?: Date;
+}): Promise<string[]> {
+  await ensureDataDir();
+  const wanted = monthKeysForRange(opts?.from, opts?.to);
+  let entries: string[];
+  try {
+    entries = await readdir(READINGS_DIR);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw err;
+  }
+  return entries
+    .filter((name) => /^\d{4}-\d{2}\.jsonl$/.test(name))
+    .map((name) => name.slice(0, 7))
+    .filter((month) => !wanted || wanted.has(month))
+    .sort()
+    .map((month) => monthlyReadingPath(month));
+}
+
+/**
+ * Stream readings in append order across legacy and monthly-sharded files.
+ * `from`/`to` limit monthly shard selection; the legacy file is always scanned
+ * because it predates sharding and can contain any timestamp.
+ */
+export async function* iterReadings(opts?: {
+  from?: Date;
+  to?: Date;
+}): AsyncGenerator<Reading> {
+  yield* iterReadingFile(READINGS_PATH);
+  for (const path of await monthlyReadingFiles(opts)) {
+    yield* iterReadingFile(path);
+  }
+}
+
+export async function appendDailyRollups(rows: DailyRollup[]): Promise<void> {
+  if (rows.length === 0) return;
+  await ensureDataDir();
+  await mkdir(ROLLUPS_DIR, { recursive: true });
+  const lines = rows.map((r) => JSON.stringify(r)).join("\n") + "\n";
+  await enqueue(() => appendFile(DAILY_ROLLUP_PATH, lines, "utf8"));
+}
+
+export async function* iterDailyRollups(opts?: {
+  from?: Date;
+  to?: Date;
+}): AsyncGenerator<DailyRollup> {
+  const fromDay = opts?.from?.toISOString().slice(0, 10);
+  const toDay = opts?.to?.toISOString().slice(0, 10);
+  const file = Bun.file(DAILY_ROLLUP_PATH);
+  if (!(await file.exists())) return;
+
+  const decoder = new TextDecoder();
+  let buf = "";
+  // @ts-expect-error - Bun's file stream is async iterable of Uint8Array
+  for await (const chunk of file.stream()) {
+    buf += decoder.decode(chunk as Uint8Array, { stream: true });
+    let nl: number;
+    while ((nl = buf.indexOf("\n")) !== -1) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line) continue;
+      try {
+        const row = JSON.parse(line) as DailyRollup;
+        if (fromDay && row.date < fromDay) continue;
+        if (toDay && row.date >= toDay) continue;
+        yield row;
+      } catch {
+        // skip malformed line
+      }
+    }
+  }
+  buf += decoder.decode();
+  const tail = buf.trim();
+  if (tail) {
+    try {
+      const row = JSON.parse(tail) as DailyRollup;
+      if ((!fromDay || row.date >= fromDay) && (!toDay || row.date < toDay)) {
+        yield row;
+      }
+    } catch {
+      // skip malformed tail
+    }
+  }
+}
+
 export const paths = {
   dataDir: DATA_DIR,
   rooms: ROOMS_PATH,
   readings: READINGS_PATH,
+  readingsDir: READINGS_DIR,
+  rollupsDir: ROLLUPS_DIR,
+  dailyRollup: DAILY_ROLLUP_PATH,
 } as const;
