@@ -101,8 +101,9 @@ room validation to that route — keep the HTML route purely static.
 1. **Don't pre-aggregate on write.** The whole point of the on-demand
    aggregator is that lease boundaries can be edited freely. If you add a
    monthly cache, invalidate it whenever `data/rooms.json` changes.
-2. **Validate `roomId` and `monitorId` against `^[A-Za-z0-9_-]{1,16}$` in
-   `server.ts`** — keeps path segments URL-safe and bounded. There is **no**
+2. **Validate `roomId` and `monitorId` against `^[\p{L}\p{N}_-]{1,32}$` in
+   `server.ts`** — Unicode letters/numbers are allowed (including Chinese),
+   while slashes/spaces/punctuation stay out of path segments. There is **no**
    allowlist beyond the regex; the Shellys are the source of truth for what
    `(room, monitor)` pairs exist, and the server auto-registers new ones via
    `ensureRoomAndMonitor`. Trade-off: a typo'd `MONITOR_ID` silently creates a
