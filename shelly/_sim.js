@@ -26,7 +26,7 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
-const ID_RE = /^[A-Za-z0-9_-]{1,16}$/;
+const ID_RE = /^[\p{L}\p{N}_-]{1,32}$/u;
 const DEFAULT_CONFIG = resolve(process.cwd(), "data/mock-rooms.json");
 
 const args = parseArgs(process.argv.slice(2));
@@ -264,11 +264,14 @@ async function postOnce(baseUrl, { room, monitor, seed, schedule }) {
     method: "NotifyStatus",
     params: pickEmFields(status),
   });
-  const r = await fetch(`${baseUrl}/api/ingest/${room}/${monitor}`, {
+  const r = await fetch(
+    `${baseUrl}/api/ingest/${encodeURIComponent(room)}/${encodeURIComponent(monitor)}`,
+    {
     method: "POST",
     headers: { "content-type": "application/json" },
     body,
-  });
+    },
+  );
   const txt = await r.text();
   const stamp = new Date().toLocaleTimeString();
   const w = status["em1:0"].act_power.toFixed(0);

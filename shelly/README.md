@@ -138,9 +138,6 @@ present.
 
 ## Troubleshooting
 
-- **Script says `POST 400 "invalid roomId"` or `"invalid monitorId"`** —
-  the id contains characters outside `[A-Za-z0-9_-]` or is longer than 16
-  chars. Pick a shorter/simpler id.
 - **Script says `POST failed: SSL ...`** — set `SSL_CA: "*"` to skip cert
   validation, or fix the cert.
 - **Wrong room/monitor showing up in dashboard** — auto-registration

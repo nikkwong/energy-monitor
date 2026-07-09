@@ -30,8 +30,10 @@ import {
 import type { Reading, Room } from "./lib/types.ts";
 
 const PORT = Number(process.env.PORT ?? 3000);
-const ROOM_ID_RE = /^[A-Za-z0-9_-]{1,16}$/;
-const MONITOR_ID_RE = /^[A-Za-z0-9_-]{1,16}$/;
+// Unicode room/monitor ids are OK (e.g. Chinese room labels). Keep slashes,
+// spaces, and punctuation out so ids remain safe path segments.
+const ROOM_ID_RE = /^[\p{L}\p{N}_-]{1,32}$/u;
+const MONITOR_ID_RE = /^[\p{L}\p{N}_-]{1,32}$/u;
 
 function badRequest(msg: string): Response {
   return Response.json({ error: msg }, { status: 400 });

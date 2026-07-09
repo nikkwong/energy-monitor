@@ -28,6 +28,10 @@ let CONFIG = {
   SSL_CA: null,
 };
 
+function pathSegment(s) {
+  return encodeURIComponent(String(s));
+}
+
 function isEmKey(k) {
   return (
     k.indexOf("em1:") === 0 ||
@@ -94,9 +98,9 @@ function postReport() {
       url:
         CONFIG.BASE_URL +
         "/api/ingest/" +
-        CONFIG.ROOM_ID +
+        pathSegment(CONFIG.ROOM_ID) +
         "/" +
-        CONFIG.MONITOR_ID,
+        pathSegment(CONFIG.MONITOR_ID),
       body: body,
       content_type: "application/json",
       timeout: 10,
