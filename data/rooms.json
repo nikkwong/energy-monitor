@@ -5,44 +5,10 @@
       "monitors": {
         "south": {
           "label": "south",
-          "ip": "192.168.42.11"
-        }
-      },
-      "leases": [
-        {
-          "id": "lease-301-1",
-          "tenant": "TBD",
-          "startDate": "2026-05-01",
-          "endDate": null
-        }
-      ]
-    },
-    "402": {
-      "label": "Room 402",
-      "monitors": {
-        "bathroom": {
-          "label": "bathroom",
-          "ip": "192.168.42.14"
+          "ip": "192.168.1.20"
         }
       },
       "leases": []
-    },
-    "b4": {
-      "label": "Room B4",
-      "monitors": {
-        "default": {
-          "label": "Mains",
-          "ip": "192.168.42.12"
-        }
-      },
-      "leases": [
-        {
-          "id": "lease-b4-1",
-          "tenant": "TBD",
-          "startDate": "2026-05-01",
-          "endDate": null
-        }
-      ]
     }
   }
 }

@@ -1,5 +1,6 @@
 import index from "./pages/index.html";
 import room from "./pages/room.html";
+import debug from "./pages/debug.html";
 
 import {
   appendReading,
@@ -18,6 +19,7 @@ import {
   sanitizeRoom,
 } from "./lib/monitors.ts";
 import { normalizeShelly } from "./lib/shelly.ts";
+import { recentTraffic, recordTraffic, requestMeta } from "./lib/debug.ts";
 import {
   computeAllRoomSummaries,
   computeSeries,
@@ -62,8 +64,16 @@ const server = Bun.serve({
 
     "/favicon.ico": () => new Response(null, { status: 204 }),
 
+    "/debug": debug,
+
     "/api/health": () =>
       Response.json({ ok: true, ts: new Date().toISOString() }),
+
+    "/api/debug/traffic": () =>
+      Response.json({
+        now: new Date().toISOString(),
+        traffic: recentTraffic(),
+      }),
 
     // Raw `data/rooms.json` for at-a-glance audit (auto-registered entries,
     // typo'd monitor names, lease history). Pretty-printed via the same
@@ -283,28 +293,73 @@ async function ingest(
   monitorId: string,
   method: "POST" | "GET",
 ): Promise<Response> {
-  if (!ROOM_ID_RE.test(roomId)) return badRequest("invalid roomId");
-  if (!MONITOR_ID_RE.test(monitorId)) return badRequest("invalid monitorId");
+  const meta = requestMeta(req);
+  const baseDebug = {
+    ...meta,
+    roomId,
+    monitorId,
+  };
+
+  if (!ROOM_ID_RE.test(roomId)) {
+    recordTraffic({
+      ...baseDebug,
+      status: 400,
+      message: "invalid roomId",
+    });
+    return badRequest("invalid roomId");
+  }
+  if (!MONITOR_ID_RE.test(monitorId)) {
+    recordTraffic({
+      ...baseDebug,
+      status: 400,
+      message: "invalid monitorId",
+    });
+    return badRequest("invalid monitorId");
+  }
 
   let body: unknown = null;
+  let bodyParseOk: boolean | undefined;
   if (method === "POST") {
     try {
       body = await req.json();
+      bodyParseOk = true;
     } catch {
+      bodyParseOk = false;
       // Non-JSON body — we'll fall through to the querystring extractor below.
     }
   }
 
   const url = new URL(req.url);
   const norm = normalizeShelly(body, url.searchParams);
+  const normalized = {
+    hasReading: norm.hasReading,
+    powerW: norm.powerW,
+    totalEnergyWh: norm.totalEnergyWh,
+    ts: norm.ts,
+    ip: norm.ip,
+  };
 
   if (!norm.hasReading) {
+    recordTraffic({
+      ...baseDebug,
+      status: 400,
+      message: "no recognizable Shelly fields",
+      bodyParseOk,
+      normalized,
+    });
     return badRequest("no recognizable Shelly fields");
   }
 
   const cfg = await readRooms();
   const room = cfg.rooms[roomId];
   if (monitorId === DEFAULT_MONITOR_ID && roomUsesNamedMonitors(room)) {
+    recordTraffic({
+      ...baseDebug,
+      status: 400,
+      message: "default monitor rejected for named-monitor room",
+      bodyParseOk,
+      normalized,
+    });
     return Response.json(
       {
         error:
@@ -339,6 +394,14 @@ async function ingest(
     raw: body ?? Object.fromEntries(url.searchParams),
   };
   await appendReading(reading);
+  recordTraffic({
+    ...baseDebug,
+    status: 200,
+    message: "stored reading",
+    bodyParseOk,
+    normalized,
+    autoRegistered: { newRoom, newMonitor },
+  });
   return Response.json({ ok: true });
 }
 

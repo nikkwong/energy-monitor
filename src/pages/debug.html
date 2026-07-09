@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>5214 · Debug</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="container">
+      <header class="top">
+        <h1>Debug</h1>
+        <div class="crumbs">
+          <a href="/">dashboard</a> ·
+          <a href="/api/config/rooms" target="_blank" rel="noopener">rooms.json</a>
+        </div>
+      </header>
+
+      <p class="subtitle">
+        Recent ingest traffic kept in memory. Refreshes automatically every 2 seconds.
+      </p>
+
+      <div class="grid stats" id="debugStats"></div>
+
+      <div class="chart-card">
+        <div class="head">
+          <h2>Recent ingest attempts</h2>
+          <div class="range-toggle">
+            <button id="refreshBtn" class="active" type="button">Refresh</button>
+          </div>
+        </div>
+        <div id="traffic"></div>
+      </div>
+    </div>
+    <script type="module" src="./debug.ts"></script>
+  </body>
+</html>
