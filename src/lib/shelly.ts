@@ -73,10 +73,12 @@ function num(v: unknown): number | undefined {
 }
 
 function energyTotal(v: Record<string, unknown>): number | undefined {
+  const aenergy = v["aenergy"] as Record<string, unknown> | undefined;
   const direct =
     num(v["total_act_energy"]) ??
     num(v["total_energy"]) ??
     num(v["aenergy"]) ??
+    num(aenergy?.["total"]) ??
     num(v["total_act"]);
   if (direct !== undefined) return direct;
 
@@ -113,12 +115,14 @@ type Acc = { powerW: number; totalEnergyWh: number; seen: boolean };
 
 function accumulateKeyed(obj: Record<string, unknown>, acc: Acc): void {
   // em1:N (instantaneous, single-phase per-channel), em1data:N (cumulative),
-  // em:N (Pro 3EM 3-phase aggregate), emdata:N (its cumulative companion).
+  // em:N (Pro 3EM 3-phase aggregate), emdata:N (its cumulative companion),
+  // pm1:N / switch:N (Shelly 1PM / outlet-style metering).
   for (const [key, val] of Object.entries(obj)) {
     if (!val || typeof val !== "object") continue;
-    const m = /^em(?:1)?(data)?:(\d+)$/.exec(key);
+    const m = /^(?:(em(?:1)?)(data)?|pm1|switch):(\d+)$/.exec(key);
     if (!m) continue;
-    const isData = m[1] === "data";
+    const component = m[1] ?? key.split(":")[0];
+    const isData = m[2] === "data";
     const v = val as Record<string, unknown>;
 
     if (isData) {
@@ -128,7 +132,7 @@ function accumulateKeyed(obj: Record<string, unknown>, acc: Acc): void {
         acc.seen = true;
       }
     } else {
-      const power = num(v["act_power"]) ?? num(v["power"]);
+      const power = num(v["act_power"]) ?? num(v["apower"]) ?? num(v["power"]);
       if (power !== undefined) {
         acc.powerW += power;
         acc.seen = true;
@@ -136,9 +140,12 @@ function accumulateKeyed(obj: Record<string, unknown>, acc: Acc): void {
       // Some firmwares put the cumulative counter alongside instantaneous;
       // only pull it from here if there's no companion em*data:N (rare).
       const total = energyTotal(v);
-      const companionKey = key.replace(/^em(1)?:/, (_, one) =>
-        one ? "em1data:" : "emdata:",
-      );
+      const companionKey =
+        component === "em1"
+          ? key.replace(/^em1:/, "em1data:")
+          : component === "em"
+            ? key.replace(/^em:/, "emdata:")
+            : "";
       if (total !== undefined && !(companionKey in obj)) {
         acc.totalEnergyWh += total;
         acc.seen = true;

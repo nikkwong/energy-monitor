@@ -28,22 +28,63 @@ let CONFIG = {
   SSL_CA: null,
 };
 
-function pathSegment(s) {
-  return encodeURIComponent(String(s));
+function hexByte(n) {
+  let h = "0123456789ABCDEF";
+  return "%" + h[(n >> 4) & 15] + h[n & 15];
 }
 
-function isEmKey(k) {
+function appendUtf8(out, code) {
+  if (code < 0x80) return out + hexByte(code);
+  if (code < 0x800) {
+    return out + hexByte(0xc0 | (code >> 6)) + hexByte(0x80 | (code & 0x3f));
+  }
+  return (
+    out +
+    hexByte(0xe0 | (code >> 12)) +
+    hexByte(0x80 | ((code >> 6) & 0x3f)) +
+    hexByte(0x80 | (code & 0x3f))
+  );
+}
+
+function pathSegment(value) {
+  let s = String(value);
+  let out = "";
+  for (let i = 0; i < s.length; i++) {
+    let c = s.charCodeAt(i);
+    if (
+      (c >= 0x30 && c <= 0x39) ||
+      (c >= 0x41 && c <= 0x5a) ||
+      (c >= 0x61 && c <= 0x7a) ||
+      c === 0x2d ||
+      c === 0x5f
+    ) {
+      out += s.charAt(i);
+    } else if (c <= 0xff) {
+      // Shelly mJS strings are UTF-8 byte strings, so non-ASCII usually
+      // arrives here as already-encoded bytes. Percent-encode those bytes.
+      out += hexByte(c);
+    } else {
+      // Keeps local/browser tests useful if this script is parsed outside mJS.
+      out = appendUtf8(out, c);
+    }
+  }
+  return out;
+}
+
+function isMeterKey(k) {
   return (
     k.indexOf("em1:") === 0 ||
     k.indexOf("em1data:") === 0 ||
     k.indexOf("em:") === 0 ||
-    k.indexOf("emdata:") === 0
+    k.indexOf("emdata:") === 0 ||
+    k.indexOf("pm1:") === 0 ||
+    k.indexOf("switch:") === 0
   );
 }
 
-function hasEmKeys(obj) {
+function hasMeterKeys(obj) {
   for (let k in obj) {
-    if (isEmKey(k)) return true;
+    if (isMeterKey(k)) return true;
   }
   return false;
 }
@@ -63,7 +104,7 @@ function pickEmFields(status) {
   // (power, energy) tuple per monitor, so multi-channel devices end up
   // summed; for an EM Mini Gen4 this is just em1:0 + em1data:0.
   for (let k in status) {
-    if (isEmKey(k)) out[k] = status[k];
+    if (isMeterKey(k)) out[k] = status[k];
   }
   return out;
 }
@@ -101,6 +142,29 @@ function postPayload(params) {
   });
 }
 
+function postFallbackSwitchStatus(baseParams) {
+  Shelly.call("PM1.GetStatus", { id: 0 }, function (pm1, pmCode, pmMsg) {
+    if (pmCode === 0 && pm1) {
+      baseParams["pm1:0"] = pm1;
+    } else {
+      print("fallback PM1.GetStatus failed:", pmMsg);
+    }
+
+    Shelly.call("Switch.GetStatus", { id: 0 }, function (sw, swCode, swMsg) {
+      if (swCode === 0 && sw) {
+        baseParams["switch:0"] = sw;
+      } else {
+        print("fallback Switch.GetStatus failed:", swMsg);
+      }
+
+      if (!hasMeterKeys(baseParams)) {
+        print("no meter fields found after fallback; posting diagnostic payload");
+      }
+      postPayload(baseParams);
+    });
+  });
+}
+
 function postFallbackEmStatus(baseParams) {
   // Some Gen4 firmwares don't include component entries in Shelly.GetStatus
   // from scripts, even though the component RPCs work. Query those directly.
@@ -118,10 +182,12 @@ function postFallbackEmStatus(baseParams) {
         print("fallback EMData.GetStatus failed:", emdMsg);
       }
 
-      if (!hasEmKeys(baseParams)) {
-        print("no EM fields found after fallback; posting diagnostic payload");
+      if (hasMeterKeys(baseParams)) {
+        postPayload(baseParams);
+      } else {
+        print("no EM fields found; trying PM1/Switch fallback");
+        postFallbackSwitchStatus(baseParams);
       }
-      postPayload(baseParams);
     });
   });
 }
@@ -137,11 +203,11 @@ function probeKeysOnce() {
     }
     let found = [];
     for (let k in status) {
-      if (isEmKey(k)) found.push(k);
+      if (isMeterKey(k)) found.push(k);
     }
     if (found.length === 0) {
       print(
-        "probe: no em*/em1* keys on this device. Forwarding will be empty.",
+        "probe: no meter keys on this device. Will try component RPC fallback.",
       );
     } else {
       print("probe: forwarding keys ->", found.join(", "));
@@ -156,10 +222,10 @@ function postReport() {
       return;
     }
     let params = pickEmFields(status);
-    if (hasEmKeys(params)) {
+    if (hasMeterKeys(params)) {
       postPayload(params);
     } else {
-      print("Shelly.GetStatus had no EM keys; trying component RPC fallback");
+      print("Shelly.GetStatus had no meter keys; trying component RPC fallback");
       postFallbackEmStatus(params);
     }
   });
