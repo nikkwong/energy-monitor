@@ -58,7 +58,6 @@ type SeriesResp = {
 
 let chart: Chart | null = null;
 type SummaryRange = "month" | "24h" | "7d" | "30d" | "all";
-type ChartRange = "30d" | "7d" | "24h" | "1y";
 
 function rangeLabel(range: SummaryRange): string {
   if (range === "24h") return "Last 24 hours";
@@ -219,7 +218,7 @@ function escapeHtml(s: string): string {
   );
 }
 
-function chartRange(range: ChartRange): {
+function chartRange(range: SummaryRange): {
   bucket: "hour" | "day" | "month";
   from: Date;
   title: string;
@@ -239,21 +238,31 @@ function chartRange(range: ChartRange): {
       title: "House total · last 7 days",
     };
   }
-  if (range === "1y") {
+  if (range === "30d") {
     return {
-      bucket: "month",
-      from: new Date(to.getTime() - 365 * 24 * 60 * 60 * 1000),
-      title: "House total · last year",
+      bucket: "day",
+      from: new Date(to.getTime() - 30 * 24 * 60 * 60 * 1000),
+      title: "House total · last 30 days",
     };
   }
+  if (range === "all") {
+    return {
+      bucket: "month",
+      from: new Date(0),
+      title: "House total · all time",
+    };
+  }
+  const from = new Date();
+  from.setDate(1);
+  from.setHours(0, 0, 0, 0);
   return {
     bucket: "day",
-    from: new Date(to.getTime() - 30 * 24 * 60 * 60 * 1000),
-    title: "House total · last 30 days",
+    from,
+    title: "House total · this month",
   };
 }
 
-async function renderChart(range: ChartRange): Promise<void> {
+async function renderChart(range: SummaryRange): Promise<void> {
   const to = new Date();
   const { bucket, from, title } = chartRange(range);
   document.getElementById("chartTitle")!.textContent = title;
@@ -337,8 +346,7 @@ async function main(): Promise<void> {
   renderRooms(rooms, rate, summaryRange);
   attachRoomActions();
 
-  let activeChartRange: ChartRange = "30d";
-  void renderChart(activeChartRange).catch((err) => {
+  void renderChart(summaryRange).catch((err) => {
     console.error("chart failed:", err);
     document.getElementById("totalChart")?.parentElement?.insertAdjacentHTML(
       "afterend",
@@ -356,16 +364,7 @@ async function main(): Promise<void> {
     rate = getElectricityRatePerKWh();
     renderTotals(rooms, rate, summaryRange);
     renderRooms(rooms, rate, summaryRange);
-  });
-
-  const chartToggle = document.getElementById("ranges")!;
-  chartToggle.addEventListener("click", async (e) => {
-    const t = e.target as HTMLElement;
-    if (t.tagName !== "BUTTON") return;
-    chartToggle.querySelectorAll("button").forEach((b) => b.classList.remove("active"));
-    t.classList.add("active");
-    activeChartRange = t.dataset.chartRange as ChartRange;
-    await renderChart(activeChartRange);
+    await renderChart(summaryRange);
   });
 }
 
