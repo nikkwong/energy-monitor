@@ -64,6 +64,15 @@ type UsageResp = {
   currentLease: Lease | null;
   leaseUsage: Usage;
   monthUsage: Usage;
+  bills?: Array<{
+    month: string;
+    tenant: string;
+    leaseId: string;
+    from: string;
+    to: string;
+    energyKWh: number;
+    status: "final" | "in_progress";
+  }>;
   latest: {
     ts: string;
     powerW: number;
@@ -318,9 +327,56 @@ async function reloadRoom(roomId: string): Promise<void> {
   roomData = await jget<UsageResp>(`/api/rooms/${encodeURIComponent(roomId)}/usage`);
   renderHeader(roomData);
   renderStats(roomData);
+  renderBills(roomData);
   if (editMode) renderEditPanel(roomData);
   const leaseStart = roomData.currentLease?.startDate ?? null;
   await renderChart(roomId, chartRange, leaseStart);
+}
+
+function formatMonth(month: string): string {
+  const d = new Date(month + "-01T00:00:00Z");
+  return d.toLocaleDateString([], { month: "long", year: "numeric", timeZone: "UTC" });
+}
+
+function formatBillRange(from: string, to: string): string {
+  const opts: Intl.DateTimeFormatOptions = {
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  };
+  return `${new Date(from).toLocaleDateString([], opts)} – ${new Date(to).toLocaleDateString([], opts)}`;
+}
+
+function renderBills(data: UsageResp): void {
+  const el = document.getElementById("bills")!;
+  const bills = data.bills ?? [];
+  if (bills.length === 0) {
+    el.innerHTML = `<div class="empty">No lease history yet, so there are no monthly bills.</div>`;
+    return;
+  }
+
+  el.innerHTML = `
+    <div class="bill-list">
+      ${bills
+        .map(
+          (b) => `
+            <div class="bill-row">
+              <div class="bill-main">
+                <div class="bill-month">${escapeHtml(formatMonth(b.month))}</div>
+                <div class="bill-sub">
+                  ${escapeHtml(b.tenant)} · ${escapeHtml(formatBillRange(b.from, b.to))}
+                </div>
+              </div>
+              <div class="bill-kwh tabular">${fmtKWh(b.energyKWh)} kWh</div>
+              <span class="bill-status ${b.status === "in_progress" ? "progress" : "final"}">
+                ${b.status === "in_progress" ? "in progress" : "final"}
+              </span>
+            </div>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
 }
 
 function renderStats(data: UsageResp): void {
@@ -533,6 +589,7 @@ async function main(): Promise<void> {
   roomData = data;
   renderHeader(data);
   renderStats(data);
+  renderBills(data);
 
   const editBtn = document.getElementById("editToggle")!;
   editBtn.hidden = false;

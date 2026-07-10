@@ -22,6 +22,7 @@ import { normalizeShelly } from "./lib/shelly.ts";
 import { recentTraffic, recordTraffic, requestMeta } from "./lib/debug.ts";
 import {
   computeAllRoomSummaries,
+  computeMonthlyBills,
   computeSeries,
   computeUsage,
   latestReading,
@@ -211,10 +212,11 @@ const server = Bun.serve({
       monthFrom.setUTCDate(1);
       monthFrom.setUTCHours(0, 0, 0, 0);
       const now = parseDate(url.searchParams.get("to"), new Date());
-      const [lease, month, latest] = await Promise.all([
+      const [lease, month, latest, bills] = await Promise.all([
         computeUsage({ room: roomId, from: leaseFrom, to: now }),
         computeUsage({ room: roomId, from: monthFrom, to: now }),
         latestReading(roomId),
+        computeMonthlyBills({ room: roomId, leases: r.leases, to: now }),
       ]);
       const roomOut = sanitizeRoom({ id: roomId, ...r });
       const latestOut = latest
@@ -239,6 +241,7 @@ const server = Bun.serve({
           monitors: filterMonitorRecord(month.monitors, roomOut),
         },
         latest: latestOut,
+        bills,
       });
     },
 

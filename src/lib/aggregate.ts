@@ -19,6 +19,16 @@ export type UsageSummary = {
   monitors: Record<string, number>;
 };
 
+export type MonthlyBill = {
+  month: string;
+  tenant: string;
+  leaseId: string;
+  from: string;
+  to: string;
+  energyKWh: number;
+  status: "final" | "in_progress";
+};
+
 export type LatestReading = {
   ts: string;
   /** Sum of instantaneous power across every monitor in the room, in watts. */
@@ -124,6 +134,26 @@ function monthStartMs(now: Date): number {
   monthFrom.setUTCDate(1);
   monthFrom.setUTCHours(0, 0, 0, 0);
   return monthFrom.getTime();
+}
+
+function startOfUtcMonth(d: Date): Date {
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
+}
+
+function nextUtcMonth(d: Date): Date {
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1));
+}
+
+function minDate(a: Date, b: Date): Date {
+  return a.getTime() <= b.getTime() ? a : b;
+}
+
+function maxDate(a: Date, b: Date): Date {
+  return a.getTime() >= b.getTime() ? a : b;
+}
+
+function monthLabel(d: Date): string {
+  return d.toISOString().slice(0, 7);
 }
 
 /**
@@ -267,6 +297,100 @@ export async function computeUsage(opts: {
     energyKWh: totalKWh,
     monitors,
   };
+}
+
+export async function computeMonthlyBills(opts: {
+  room: string;
+  leases: RoomsConfig["rooms"][string]["leases"];
+  to: Date;
+}): Promise<MonthlyBill[]> {
+  const windows: Array<{
+    key: string;
+    month: string;
+    tenant: string;
+    leaseId: string;
+    from: Date;
+    to: Date;
+    status: MonthlyBill["status"];
+  }> = [];
+
+  for (const lease of opts.leases) {
+    const leaseStart = new Date(lease.startDate + "T00:00:00Z");
+    const leaseEnd = lease.endDate
+      ? new Date(lease.endDate + "T00:00:00Z")
+      : opts.to;
+    const cappedEnd = minDate(leaseEnd, opts.to);
+    if (cappedEnd <= leaseStart) continue;
+
+    let cursor = startOfUtcMonth(leaseStart);
+    while (cursor < cappedEnd) {
+      const next = nextUtcMonth(cursor);
+      const from = maxDate(leaseStart, cursor);
+      const to = minDate(cappedEnd, next);
+      if (to > from) {
+        const key = `${lease.id}|${from.toISOString()}|${to.toISOString()}`;
+        windows.push({
+          key,
+          month: monthLabel(cursor),
+          tenant: lease.tenant,
+          leaseId: lease.id,
+          from,
+          to,
+          status: to.getTime() === opts.to.getTime() ? "in_progress" : "final",
+        });
+      }
+      cursor = next;
+    }
+  }
+
+  if (windows.length === 0) return [];
+
+  const byKey = new Map<string, number>();
+  for (const w of windows) byKey.set(w.key, 0);
+
+  const ctx = await readFilterContext();
+  const firstFrom = windows.reduce((min, w) => (w.from < min ? w.from : min), windows[0]!.from);
+  const lastTo = windows.reduce((max, w) => (w.to > max ? w.to : max), windows[0]!.to);
+
+  function windowForTs(tsMs: number): (typeof windows)[number] | undefined {
+    return windows.find((w) => tsMs >= w.from.getTime() && tsMs < w.to.getTime());
+  }
+
+  for await (const row of iterDailyRollups({ from: firstFrom, to: lastTo })) {
+    if (!shouldUseRollup(row, ctx, opts.room)) continue;
+    const tsMs = new Date(row.date + "T00:00:00Z").getTime();
+    const w = windowForTs(tsMs);
+    if (!w) continue;
+    byKey.set(w.key, (byKey.get(w.key) ?? 0) + row.energyKWh);
+  }
+
+  const last = new Map<string, number>();
+  for await (const r of iterReadings({ from: firstFrom, to: lastTo })) {
+    if (!shouldUseReading(r, ctx, opts.room)) continue;
+    const key = counterKey(r);
+    const prev = last.get(key);
+    last.set(key, r.totalEnergyWh);
+    if (prev === undefined) continue;
+
+    const delta = r.totalEnergyWh - prev;
+    if (delta <= 0) continue;
+    const tsMs = new Date(r.ts).getTime();
+    const w = windowForTs(tsMs);
+    if (!w) continue;
+    byKey.set(w.key, (byKey.get(w.key) ?? 0) + delta / 1000);
+  }
+
+  return windows
+    .map((w) => ({
+      month: w.month,
+      tenant: w.tenant,
+      leaseId: w.leaseId,
+      from: w.from.toISOString(),
+      to: w.to.toISOString(),
+      energyKWh: byKey.get(w.key) ?? 0,
+      status: w.status,
+    }))
+    .sort((a, b) => b.from.localeCompare(a.from));
 }
 
 export async function computeSeries(opts: {

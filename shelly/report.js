@@ -41,6 +41,13 @@ function isEmKey(k) {
   );
 }
 
+function hasEmKeys(obj) {
+  for (let k in obj) {
+    if (isEmKey(k)) return true;
+  }
+  return false;
+}
+
 function pickEmFields(status) {
   let out = {};
   if (status && status.sys && typeof status.sys.unixtime === "number") {
@@ -59,6 +66,64 @@ function pickEmFields(status) {
     if (isEmKey(k)) out[k] = status[k];
   }
   return out;
+}
+
+function postPayload(params) {
+  let body = JSON.stringify({
+    method: "NotifyStatus",
+    params: params,
+  });
+  let req = {
+    url:
+      CONFIG.BASE_URL +
+      "/api/ingest/" +
+      pathSegment(CONFIG.ROOM_ID) +
+      "/" +
+      pathSegment(CONFIG.MONITOR_ID),
+    body: body,
+    content_type: "application/json",
+    timeout: 10,
+  };
+  if (CONFIG.SSL_CA) req.ssl_ca = CONFIG.SSL_CA;
+
+  Shelly.call("HTTP.POST", req, function (res, ec, em) {
+    if (ec !== 0) {
+      print("POST failed:", em);
+      return;
+    }
+    // res.code is the HTTP status. Anything non-2xx is a server-side issue;
+    // the cumulative-counter design means the next POST recovers the gap.
+    if (res && res.code >= 200 && res.code < 300) {
+      print("POST", res.code, "ok");
+    } else {
+      print("POST returned", res && res.code, res && res.body);
+    }
+  });
+}
+
+function postFallbackEmStatus(baseParams) {
+  // Some Gen4 firmwares don't include component entries in Shelly.GetStatus
+  // from scripts, even though the component RPCs work. Query those directly.
+  Shelly.call("EM1.GetStatus", { id: 0 }, function (em1, em1Code, em1Msg) {
+    if (em1Code === 0 && em1) {
+      baseParams["em1:0"] = em1;
+    } else {
+      print("fallback EM1.GetStatus failed:", em1Msg);
+    }
+
+    Shelly.call("EMData.GetStatus", { id: 0 }, function (emd, emdCode, emdMsg) {
+      if (emdCode === 0 && emd) {
+        baseParams["emdata:0"] = emd;
+      } else {
+        print("fallback EMData.GetStatus failed:", emdMsg);
+      }
+
+      if (!hasEmKeys(baseParams)) {
+        print("no EM fields found after fallback; posting diagnostic payload");
+      }
+      postPayload(baseParams);
+    });
+  });
 }
 
 // Run once at boot: enumerate em-shaped keys the device exposes, so it's
@@ -90,36 +155,13 @@ function postReport() {
       print("GetStatus failed:", errMsg);
       return;
     }
-    let body = JSON.stringify({
-      method: "NotifyStatus",
-      params: pickEmFields(status),
-    });
-    let req = {
-      url:
-        CONFIG.BASE_URL +
-        "/api/ingest/" +
-        pathSegment(CONFIG.ROOM_ID) +
-        "/" +
-        pathSegment(CONFIG.MONITOR_ID),
-      body: body,
-      content_type: "application/json",
-      timeout: 10,
-    };
-    if (CONFIG.SSL_CA) req.ssl_ca = CONFIG.SSL_CA;
-
-    Shelly.call("HTTP.POST", req, function (res, ec, em) {
-      if (ec !== 0) {
-        print("POST failed:", em);
-        return;
-      }
-      // res.code is the HTTP status. Anything non-2xx is a server-side issue;
-      // the cumulative-counter design means the next POST recovers the gap.
-      if (res && res.code >= 200 && res.code < 300) {
-        print("POST", res.code, "ok");
-      } else {
-        print("POST returned", res && res.code, res && res.body);
-      }
-    });
+    let params = pickEmFields(status);
+    if (hasEmKeys(params)) {
+      postPayload(params);
+    } else {
+      print("Shelly.GetStatus had no EM keys; trying component RPC fallback");
+      postFallbackEmStatus(params);
+    }
   });
 }
 

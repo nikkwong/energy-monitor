@@ -226,6 +226,84 @@ header.top .crumbs a:hover {
   letter-spacing: 0.05em;
 }
 
+.bills-section {
+  margin-top: 28px;
+}
+
+.bills-section h2 {
+  margin: 0 0 10px;
+  color: var(--text-dim);
+  font-size: 14px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.bill-list {
+  display: grid;
+  gap: 8px;
+}
+
+.bill-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.bill-month {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.bill-sub {
+  margin-top: 2px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.bill-kwh {
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.bill-status {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .bill-row {
+    grid-template-columns: 1fr auto;
+  }
+
+  .bill-status {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+}
+
+.bill-status.progress {
+  color: #3b2a04;
+  background: var(--warn);
+}
+
+.bill-status.final {
+  color: var(--text-dim);
+  background: var(--bg);
+  border: 1px solid var(--border);
+}
+
 .edit-actions {
   display: flex;
   justify-content: flex-end;

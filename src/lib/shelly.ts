@@ -72,6 +72,29 @@ function num(v: unknown): number | undefined {
   return undefined;
 }
 
+function energyTotal(v: Record<string, unknown>): number | undefined {
+  const direct =
+    num(v["total_act_energy"]) ??
+    num(v["total_energy"]) ??
+    num(v["aenergy"]) ??
+    num(v["total_act"]);
+  if (direct !== undefined) return direct;
+
+  const phases = [
+    num(v["a_total_act_energy"]),
+    num(v["b_total_act_energy"]),
+    num(v["c_total_act_energy"]),
+  ];
+  let sum = 0;
+  let seen = false;
+  for (const p of phases) {
+    if (p === undefined) continue;
+    sum += p;
+    seen = true;
+  }
+  return seen ? sum : undefined;
+}
+
 function tsFromBody(body: unknown): string {
   if (body && typeof body === "object") {
     const b = body as Record<string, unknown>;
@@ -99,10 +122,7 @@ function accumulateKeyed(obj: Record<string, unknown>, acc: Acc): void {
     const v = val as Record<string, unknown>;
 
     if (isData) {
-      const total =
-        num(v["total_act_energy"]) ??
-        num(v["total_energy"]) ??
-        num(v["aenergy"]);
+      const total = energyTotal(v);
       if (total !== undefined) {
         acc.totalEnergyWh += total;
         acc.seen = true;
@@ -115,10 +135,7 @@ function accumulateKeyed(obj: Record<string, unknown>, acc: Acc): void {
       }
       // Some firmwares put the cumulative counter alongside instantaneous;
       // only pull it from here if there's no companion em*data:N (rare).
-      const total =
-        num(v["total_act_energy"]) ??
-        num(v["total_energy"]) ??
-        num(v["aenergy"]);
+      const total = energyTotal(v);
       const companionKey = key.replace(/^em(1)?:/, (_, one) =>
         one ? "em1data:" : "emdata:",
       );
