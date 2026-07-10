@@ -9,7 +9,9 @@ import {
   endCurrentLease,
   ensureRoomAndMonitor,
   LeaseError,
+  MonitorSwitchError,
   readRooms,
+  setMonitorSwitchDesired,
   startLease,
 } from "./lib/data.ts";
 import {
@@ -103,6 +105,10 @@ const server = Bun.serve({
           leaseStart: current?.startDate ?? null,
           leaseKWh: s.leaseKWh,
           monthKWh: s.monthKWh,
+          dayKWh: s.dayKWh,
+          weekKWh: s.weekKWh,
+          thirtyDayKWh: s.thirtyDayKWh,
+          allTimeKWh: s.allTimeKWh,
           powerW: s.powerW,
           lastSeen: s.lastSeen,
           monitors: monitorList(r),
@@ -194,6 +200,31 @@ const server = Bun.serve({
         }
         console.log(`deleted monitor ${roomId}/${monitorId}`);
         return Response.json({ ok: true, deleted: { roomId, monitorId } });
+      },
+    },
+
+    "/api/rooms/:roomId/monitors/:monitorId/switch": {
+      POST: async (req) => {
+        const { roomId, monitorId } = req.params;
+        if (!ROOM_ID_RE.test(roomId)) return badRequest("invalid roomId");
+        if (!MONITOR_ID_RE.test(monitorId)) return badRequest("invalid monitorId");
+        let body: { output?: unknown };
+        try {
+          body = (await req.json()) as typeof body;
+        } catch {
+          return badRequest("expected JSON body");
+        }
+        if (typeof body.output !== "boolean") return badRequest("output must be a boolean");
+        try {
+          const monitor = await setMonitorSwitchDesired(roomId, monitorId, body.output);
+          console.log(`queued switch ${roomId}/${monitorId} -> ${body.output ? "on" : "off"}`);
+          return Response.json({ ok: true, monitor });
+        } catch (err) {
+          if (err instanceof MonitorSwitchError) {
+            return Response.json({ error: err.message }, { status: err.status });
+          }
+          throw err;
+        }
       },
     },
 
@@ -342,6 +373,8 @@ async function ingest(
     totalEnergyWh: norm.totalEnergyWh,
     ts: norm.ts,
     ip: norm.ip,
+    hasSwitch: norm.hasSwitch,
+    switchOutput: norm.switchOutput,
   };
 
   if (!norm.hasReading) {
@@ -382,7 +415,12 @@ async function ingest(
   const { newRoom, newMonitor } = await ensureRoomAndMonitor(
     roomId,
     monitorId,
-    norm.ip ? { ip: norm.ip } : undefined,
+    norm.ip || norm.hasSwitch
+      ? {
+          ip: norm.ip,
+          switch: norm.hasSwitch ? { output: norm.switchOutput } : undefined,
+        }
+      : undefined,
   );
   if (newRoom || newMonitor) {
     const what = newRoom ? "room+monitor" : "monitor";
@@ -407,7 +445,13 @@ async function ingest(
     normalized,
     autoRegistered: { newRoom, newMonitor },
   });
-  return Response.json({ ok: true });
+  const latestCfg = await readRooms();
+  const desiredOutput = latestCfg.rooms[roomId]?.monitors?.[monitorId]?.switch?.desiredOutput;
+  const switchCommand =
+    typeof desiredOutput === "boolean" && desiredOutput !== norm.switchOutput
+      ? { output: desiredOutput }
+      : undefined;
+  return Response.json({ ok: true, switch: switchCommand });
 }
 
 console.log(`5214 dashboard listening on http://${server.hostname}:${server.port}`);

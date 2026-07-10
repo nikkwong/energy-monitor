@@ -109,6 +109,30 @@ function pickEmFields(status) {
   return out;
 }
 
+function applySwitchCommand(body) {
+  let parsed = null;
+  try {
+    parsed = JSON.parse(body || "{}");
+  } catch (e) {
+    return;
+  }
+  if (
+    !parsed ||
+    !parsed.switch ||
+    typeof parsed.switch.output !== "boolean"
+  ) {
+    return;
+  }
+  let output = parsed.switch.output;
+  Shelly.call("Switch.Set", { id: 0, on: output }, function (_res, ec, em) {
+    if (ec === 0) {
+      print("applied switch command:", output ? "on" : "off");
+    } else {
+      print("Switch.Set failed:", em);
+    }
+  });
+}
+
 function postPayload(params) {
   let body = JSON.stringify({
     method: "NotifyStatus",
@@ -136,6 +160,7 @@ function postPayload(params) {
     // the cumulative-counter design means the next POST recovers the gap.
     if (res && res.code >= 200 && res.code < 300) {
       print("POST", res.code, "ok");
+      applySwitchCommand(res && res.body);
     } else {
       print("POST returned", res && res.code, res && res.body);
     }

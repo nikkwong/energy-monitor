@@ -32,6 +32,16 @@ export type Monitor = {
    * to render a click-through link to the device's admin UI.
    */
   ip?: string;
+  /**
+   * Present when this monitor reported a Shelly switch component. `output` is
+   * the last reported relay state; `desiredOutput` is a queued command that the
+   * Shelly script applies on its next report.
+   */
+  switch?: {
+    output?: boolean;
+    desiredOutput?: boolean;
+    updatedAt?: string;
+  };
 };
 
 /**

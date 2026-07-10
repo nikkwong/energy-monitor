@@ -11,9 +11,11 @@ import {
 
 import {
   fmtKWh,
+  fmtMoney,
   fmtW,
   fmtRelativeTime,
   freshnessClass,
+  getElectricityRatePerKWh,
   jget,
   jpost,
 } from "./common.ts";
@@ -43,6 +45,11 @@ type Lease = {
 type Monitor = {
   label: string;
   ip?: string;
+  switch?: {
+    output?: boolean;
+    desiredOutput?: boolean;
+    updatedAt?: string;
+  };
 };
 
 type Room = {
@@ -327,10 +334,78 @@ async function reloadRoom(roomId: string): Promise<void> {
   roomData = await jget<UsageResp>(`/api/rooms/${encodeURIComponent(roomId)}/usage`);
   renderHeader(roomData);
   renderStats(roomData);
+  renderSwitchControls(roomData);
   renderBills(roomData);
   if (editMode) renderEditPanel(roomData);
   const leaseStart = roomData.currentLease?.startDate ?? null;
   await renderChart(roomId, chartRange, leaseStart);
+}
+
+function renderSwitchControls(data: UsageResp): void {
+  const el = document.getElementById("switchControls")!;
+  const monitors = data.room.monitors ?? {};
+  const switchIds = visibleMonitorIds(monitors).filter((id) => Boolean(monitors[id]?.switch));
+  if (switchIds.length === 0) {
+    el.innerHTML = "";
+    return;
+  }
+
+  el.innerHTML = `
+    <div class="switch-control-list">
+      ${switchIds
+        .sort()
+        .map((id) => {
+          const monitor = monitors[id]!;
+          const sw = monitor.switch!;
+          const output = sw.output === true;
+          const desired = sw.desiredOutput;
+          const queued = typeof desired === "boolean" && desired !== sw.output;
+          const stateText = output ? "on" : "off";
+          const queuedText = queued ? ` · queued ${desired ? "on" : "off"}` : "";
+          return `
+            <div class="switch-control-row">
+              <div>
+                <div class="switch-control-name">${escapeHtml(displayMonitorLabel(monitor, id))}</div>
+                <div class="switch-control-sub">currently ${stateText}${queuedText}</div>
+              </div>
+              <div class="switch-buttons">
+                <button type="button" class="${output ? "active" : ""}" data-monitor="${escapeHtml(id)}" data-output="true">On</button>
+                <button type="button" class="${!output ? "active" : ""}" data-monitor="${escapeHtml(id)}" data-output="false">Off</button>
+              </div>
+            </div>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
+
+  el.querySelectorAll<HTMLButtonElement>("button[data-monitor]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const monitorId = button.dataset.monitor;
+      const output = button.dataset.output === "true";
+      if (!monitorId) return;
+      void handleSwitch(data.room.id, monitorId, output, button);
+    });
+  });
+}
+
+async function handleSwitch(
+  roomId: string,
+  monitorId: string,
+  output: boolean,
+  button: HTMLButtonElement,
+): Promise<void> {
+  button.disabled = true;
+  try {
+    await jpost(`/api/rooms/${encodeURIComponent(roomId)}/monitors/${encodeURIComponent(monitorId)}/switch`, {
+      output,
+    });
+    await reloadRoom(roomId);
+  } catch (err) {
+    showError(String(err));
+  } finally {
+    button.disabled = false;
+  }
 }
 
 function formatMonth(month: string): string {
@@ -382,6 +457,8 @@ function renderBills(data: UsageResp): void {
 function renderStats(data: UsageResp): void {
   const latest = data.latest;
   const cls = freshnessClass(latest?.ts ?? null);
+  const ratePerKWh = getElectricityRatePerKWh();
+  const rateText = `at ${fmtMoney(ratePerKWh)}/kWh`;
 
   // Per-monitor breakdowns only add value once a room has more than one feed.
   const monthIds = visibleMonitorIds(data.room.monitors);
@@ -413,16 +490,17 @@ function renderStats(data: UsageResp): void {
     <div class="card">
       <div class="label">This month</div>
       <div class="value tabular">${fmtKWh(data.monthUsage.energyKWh)}<span class="unit">kWh</span></div>
-      <div class="sub">${monthBreakdown || "&nbsp;"}</div>
+      <div class="cost tabular">${fmtMoney(data.monthUsage.energyKWh * ratePerKWh)}</div>
+      <div class="sub">${[rateText, monthBreakdown].filter(Boolean).join(" · ") || "&nbsp;"}</div>
     </div>
     <div class="card">
       <div class="label">Lease to date</div>
       <div class="value tabular">${fmtKWh(data.leaseUsage.energyKWh)}<span class="unit">kWh</span></div>
-      <div class="sub">${
-        data.currentLease
-          ? `since ${data.currentLease.startDate}`
-          : "no active lease"
-      }</div>
+      <div class="cost tabular">${fmtMoney(data.leaseUsage.energyKWh * ratePerKWh)}</div>
+      <div class="sub">${[
+        data.currentLease ? `since ${data.currentLease.startDate}` : "no active lease",
+        rateText,
+      ].filter(Boolean).join(" · ")}</div>
     </div>
     <div class="card">
       <div class="label">Right now</div>
@@ -589,6 +667,7 @@ async function main(): Promise<void> {
   roomData = data;
   renderHeader(data);
   renderStats(data);
+  renderSwitchControls(data);
   renderBills(data);
 
   const editBtn = document.getElementById("editToggle")!;

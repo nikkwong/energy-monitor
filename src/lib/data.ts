@@ -7,7 +7,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { resolve } from "node:path";
-import type { DailyRollup, Lease, Reading, RoomsConfig } from "./types.ts";
+import type { DailyRollup, Lease, Monitor, Reading, RoomsConfig } from "./types.ts";
 import { DEFAULT_MONITOR_ID, roomUsesNamedMonitors } from "./monitors.ts";
 
 const DATA_DIR = resolve(process.cwd(), "data");
@@ -180,6 +180,38 @@ export async function deleteMonitor(
   });
 }
 
+export class MonitorSwitchError extends Error {
+  constructor(
+    message: string,
+    public status = 400,
+  ) {
+    super(message);
+  }
+}
+
+export async function setMonitorSwitchDesired(
+  roomId: string,
+  monitorId: string,
+  output: boolean,
+): Promise<Monitor> {
+  await ensureDataDir();
+  return enqueue(async () => {
+    const text = await readFile(ROOMS_PATH, "utf8");
+    const cfg = JSON.parse(text) as RoomsConfig;
+    const room = cfg.rooms[roomId];
+    if (!room) throw new MonitorSwitchError("no such room", 404);
+    const monitor = room.monitors?.[monitorId];
+    if (!monitor) throw new MonitorSwitchError("no such monitor", 404);
+    if (!monitor.switch) {
+      throw new MonitorSwitchError("monitor is not switch-capable", 400);
+    }
+    monitor.switch.desiredOutput = output;
+    monitor.switch.updatedAt = new Date().toISOString();
+    await writeRoomsInQueue(cfg);
+    return monitor;
+  });
+}
+
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 function parseIsoDate(v: string): string | null {
@@ -301,7 +333,7 @@ export class LeaseError extends Error {
 export async function ensureRoomAndMonitor(
   roomId: string,
   monitorId: string,
-  observed?: { ip?: string },
+  observed?: { ip?: string; switch?: { output?: boolean } },
 ): Promise<{ newRoom: boolean; newMonitor: boolean }> {
   await ensureDataDir();
   return enqueue(async () => {
@@ -357,6 +389,17 @@ export async function ensureRoomAndMonitor(
     if (observed?.ip && monitor.ip !== observed.ip) {
       monitor.ip = observed.ip;
       dirty = true;
+    }
+    if (observed?.switch) {
+      const current = monitor.switch ?? {};
+      if (!monitor.switch || monitor.switch.output !== observed.switch.output) {
+        monitor.switch = {
+          ...current,
+          output: observed.switch.output,
+          updatedAt: new Date().toISOString(),
+        };
+        dirty = true;
+      }
     }
 
     if (dirty) {

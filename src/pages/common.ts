@@ -1,5 +1,8 @@
 // Small shared client helpers: number formatting, freshness, fetch.
 
+export const DEFAULT_ELECTRICITY_RATE_PER_KWH = 0.1338;
+export const ELECTRICITY_RATE_STORAGE_KEY = "5214:electricityRatePerKWh";
+
 export function fmtKWh(kwh: number): string {
   if (!Number.isFinite(kwh)) return "—";
   if (kwh >= 100) return kwh.toFixed(0);
@@ -11,6 +14,36 @@ export function fmtW(w: number | null | undefined): string {
   if (w == null || !Number.isFinite(w)) return "—";
   if (Math.abs(w) >= 1000) return (w / 1000).toFixed(2) + " kW";
   return w.toFixed(0) + " W";
+}
+
+export function fmtMoney(v: number | null | undefined): string {
+  if (v == null || !Number.isFinite(v)) return "—";
+  return new Intl.NumberFormat([], {
+    style: "currency",
+    currency: "USD",
+  }).format(v);
+}
+
+export function getElectricityRatePerKWh(
+  fallback = DEFAULT_ELECTRICITY_RATE_PER_KWH,
+): number {
+  try {
+    const raw = window.localStorage.getItem(ELECTRICITY_RATE_STORAGE_KEY);
+    if (!raw) return fallback;
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+export function saveElectricityRatePerKWh(rate: number): void {
+  if (!Number.isFinite(rate) || rate <= 0) return;
+  try {
+    window.localStorage.setItem(ELECTRICITY_RATE_STORAGE_KEY, String(rate));
+  } catch {
+    // Ignore storage failures; the UI can still use the in-memory value.
+  }
 }
 
 export function fmtRelativeTime(iso: string | null): string {

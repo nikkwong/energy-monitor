@@ -25,6 +25,15 @@ bun install --production
 PORT=3000 bun run start
 ```
 
+## Configuration
+
+- `PORT` — HTTP port, defaults to `3000`.
+
+The homepage has a browser-local electricity-rate setting saved in
+`localStorage`. It defaults to Seattle City Light's current Seattle residential
+energy rate, `$0.1338/kWh`. Cost estimates do not include fixed daily service
+charges.
+
 ## Routes
 
 ### Pages

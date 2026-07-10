@@ -92,6 +92,26 @@ header.top .crumbs a:hover {
   background: var(--bg-elev-2);
 }
 
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+  color: var(--text-dim);
+  cursor: pointer;
+  font: inherit;
+  font-size: 22px;
+}
+
+.icon-btn:hover {
+  color: var(--text);
+  background: var(--bg-elev);
+}
+
 .btn-primary {
   background: var(--accent-2);
   border: 0;
@@ -126,6 +146,74 @@ header.top .crumbs a:hover {
 
 .btn-danger:hover {
   background: #2a1419;
+}
+
+.switch-controls {
+  margin: -8px 0 20px;
+}
+
+.switch-control-list {
+  display: grid;
+  gap: 8px;
+}
+
+.switch-control-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.switch-control-name {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.switch-control-sub {
+  margin-top: 2px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.switch-buttons {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  overflow: hidden;
+}
+
+.switch-buttons button {
+  background: transparent;
+  border: 0;
+  border-left: 1px solid var(--border);
+  color: var(--text-dim);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  min-width: 48px;
+  padding: 7px 10px;
+}
+
+.switch-buttons button:first-child {
+  border-left: 0;
+}
+
+.switch-buttons button:hover {
+  color: var(--text);
+}
+
+.switch-buttons button.active {
+  background: var(--bg-elev-2);
+  color: var(--text);
+}
+
+.switch-buttons button:disabled {
+  cursor: wait;
+  opacity: 0.6;
 }
 
 .edit-panel {
@@ -333,6 +421,77 @@ header.top .crumbs a:hover {
   margin-bottom: 24px;
 }
 
+.rate-control {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.settings-dialog {
+  width: min(420px, calc(100vw - 32px));
+  margin: auto;
+  background: linear-gradient(180deg, var(--bg-elev) 0%, var(--bg-elev-2) 100%);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  color: var(--text);
+  padding: 18px;
+}
+
+.settings-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.6);
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.modal-head h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.rate-control label {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.rate-input-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 6px 9px;
+}
+
+.rate-input-wrap input {
+  width: 86px;
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  padding: 0;
+}
+
+.rate-input-wrap input:focus {
+  outline: none;
+}
+
+.rate-note {
+  font-size: 12px;
+}
+
 .grid {
   display: grid;
   gap: 16px;
@@ -345,6 +504,23 @@ header.top .crumbs a:hover {
 .grid.stats {
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   margin-bottom: 20px;
+}
+
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 12px;
+}
+
+.section-head h2 {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 14px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
 }
 
 .card {
@@ -420,6 +596,13 @@ a.card.room:hover .card-delete {
   color: var(--text-dim);
   margin-left: 4px;
   font-weight: 500;
+}
+
+.card .cost {
+  margin-top: 2px;
+  color: var(--good);
+  font-size: 15px;
+  font-weight: 600;
 }
 
 .card .sub {

@@ -11,22 +11,52 @@
     <div class="container">
       <header class="top">
         <h1>5214</h1>
-        <div class="crumbs">
-          power dashboard ·
-          <a href="/api/config/rooms" target="_blank" rel="noopener">rooms.json</a>
+        <div class="header-actions">
+          <div class="crumbs">
+            power dashboard ·
+            <a href="/api/config/rooms" target="_blank" rel="noopener">rooms.json</a>
+          </div>
+          <button type="button" id="settingsToggle" class="icon-btn" aria-label="Settings" title="Settings">⚙</button>
         </div>
       </header>
+
+      <dialog id="settingsDialog" class="settings-dialog">
+        <div class="modal-head">
+          <h2>Settings</h2>
+          <button type="button" id="settingsClose" class="icon-btn" aria-label="Close settings">×</button>
+        </div>
+        <div class="rate-control">
+          <label for="electricityRate">Electricity rate</label>
+          <div class="rate-input-wrap">
+            <span>$</span>
+            <input id="electricityRate" type="number" min="0" step="0.0001" inputmode="decimal" />
+            <span>/ kWh</span>
+          </div>
+          <div class="rate-note" id="rateNote"></div>
+        </div>
+      </dialog>
+
+      <div class="section-head">
+        <h2 id="summaryTitle">Last 7 days</h2>
+        <div class="range-toggle" id="summaryRanges">
+          <button data-summary-range="month">This month</button>
+          <button data-summary-range="24h">Last 24h</button>
+          <button data-summary-range="7d" class="active">7d</button>
+          <button data-summary-range="30d">30d</button>
+          <button data-summary-range="all">All time</button>
+        </div>
+      </div>
 
       <div class="grid stats" id="totals"></div>
 
       <div class="chart-card">
         <div class="head">
-          <h2>House total · last 30 days</h2>
+          <h2 id="chartTitle">House total · last 30 days</h2>
           <div class="range-toggle" id="ranges">
-            <button data-bucket="day" data-days="30" class="active">30d</button>
-            <button data-bucket="day" data-days="7">7d</button>
-            <button data-bucket="hour" data-days="1">24h</button>
-            <button data-bucket="month" data-days="365">1y</button>
+            <button data-chart-range="30d" class="active">30d</button>
+            <button data-chart-range="7d">7d</button>
+            <button data-chart-range="24h">24h</button>
+            <button data-chart-range="1y">1y</button>
           </div>
         </div>
         <div class="chart-wrap">

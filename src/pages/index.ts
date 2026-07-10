@@ -11,11 +11,15 @@ import {
 } from "chart.js";
 
 import {
+  DEFAULT_ELECTRICITY_RATE_PER_KWH,
   fmtKWh,
+  fmtMoney,
   fmtW,
   fmtRelativeTime,
   freshnessClass,
+  getElectricityRatePerKWh,
   jget,
+  saveElectricityRatePerKWh,
   startOfMonthLocal,
 } from "./common.ts";
 
@@ -37,6 +41,10 @@ type RoomSummary = {
   leaseStart: string | null;
   leaseKWh: number;
   monthKWh: number;
+  dayKWh: number;
+  weekKWh: number;
+  thirtyDayKWh: number;
+  allTimeKWh: number;
   powerW: number | null;
   lastSeen: string | null;
 };
@@ -49,18 +57,38 @@ type SeriesResp = {
 };
 
 let chart: Chart | null = null;
+type SummaryRange = "month" | "24h" | "7d" | "30d" | "all";
+type ChartRange = "30d" | "7d" | "24h" | "1y";
 
-function renderTotals(rooms: RoomSummary[]): void {
-  const monthTotal = rooms.reduce((s, r) => s + r.monthKWh, 0);
+function rangeLabel(range: SummaryRange): string {
+  if (range === "24h") return "Last 24 hours";
+  if (range === "7d") return "Last 7 days";
+  if (range === "30d") return "Last 30 days";
+  if (range === "all") return "All time";
+  return "This month";
+}
+
+function rangeKWh(r: RoomSummary, range: SummaryRange): number {
+  if (range === "24h") return r.dayKWh;
+  if (range === "7d") return r.weekKWh;
+  if (range === "30d") return r.thirtyDayKWh;
+  if (range === "all") return r.allTimeKWh;
+  return r.monthKWh;
+}
+
+function renderTotals(rooms: RoomSummary[], ratePerKWh: number, range: SummaryRange): void {
+  const rangeTotal = rooms.reduce((s, r) => s + rangeKWh(r, range), 0);
   const leaseTotal = rooms.reduce((s, r) => s + r.leaseKWh, 0);
   const powerTotal = rooms.reduce((s, r) => s + (r.powerW ?? 0), 0);
   const live = rooms.filter((r) => freshnessClass(r.lastSeen) === "live").length;
+  document.getElementById("summaryTitle")!.textContent = rangeLabel(range);
 
   const el = document.getElementById("totals")!;
   el.innerHTML = `
     <div class="card">
-      <div class="label">This month</div>
-      <div class="value tabular">${fmtKWh(monthTotal)}<span class="unit">kWh</span></div>
+      <div class="label">${rangeLabel(range)}</div>
+      <div class="value tabular">${fmtKWh(rangeTotal)}<span class="unit">kWh</span></div>
+      <div class="cost tabular">${fmtMoney(rangeTotal * ratePerKWh)}</div>
       <div class="sub">across all rooms</div>
     </div>
     <div class="card">
@@ -71,12 +99,13 @@ function renderTotals(rooms: RoomSummary[]): void {
     <div class="card">
       <div class="label">Since lease starts</div>
       <div class="value tabular">${fmtKWh(leaseTotal)}<span class="unit">kWh</span></div>
+      <div class="cost tabular">${fmtMoney(leaseTotal * ratePerKWh)}</div>
       <div class="sub">summed across active leases</div>
     </div>
   `;
 }
 
-function renderRooms(rooms: RoomSummary[]): void {
+function renderRooms(rooms: RoomSummary[], ratePerKWh: number, range: SummaryRange): void {
   const el = document.getElementById("rooms")!;
   if (rooms.length === 0) {
     el.innerHTML = `
@@ -90,6 +119,7 @@ function renderRooms(rooms: RoomSummary[]): void {
       const cls = freshnessClass(r.lastSeen);
       const idAttr = escapeHtml(r.id);
       const labelAttr = escapeHtml(r.label);
+      const kwh = rangeKWh(r, range);
       return `
         <a href="/${encodeURIComponent(r.id)}" class="card room">
           <button class="card-delete" data-room-id="${idAttr}" data-room-label="${labelAttr}"
@@ -98,19 +128,20 @@ function renderRooms(rooms: RoomSummary[]): void {
           <div class="tenant">${
             r.currentTenant ? escapeHtml(r.currentTenant) : "<i>vacant</i>"
           } · ${fmtRelativeTime(r.lastSeen)}</div>
-          <div class="row"><span class="k">This month</span>
-            <span class="v tabular">${fmtKWh(r.monthKWh)} kWh</span></div>
+          <div class="row"><span class="k">${rangeLabel(range)}</span>
+            <span class="v tabular">${fmtKWh(kwh)} kWh · ${fmtMoney(kwh * ratePerKWh)}</span></div>
           <div class="row"><span class="k">Since lease start</span>
-            <span class="v tabular">${fmtKWh(r.leaseKWh)} kWh</span></div>
+            <span class="v tabular">${fmtKWh(r.leaseKWh)} kWh · ${fmtMoney(r.leaseKWh * ratePerKWh)}</span></div>
           <div class="row"><span class="k">Now</span>
             <span class="v tabular">${fmtW(r.powerW)}</span></div>
         </a>`;
     })
     .join("");
 
-  // Single delegated handler for all delete buttons. The buttons live inside
-  // the card `<a>` so we must stop propagation + prevent navigation; the
-  // confirm() warns about auto-registration before the network call.
+}
+
+function attachRoomActions(): void {
+  const el = document.getElementById("rooms")!;
   el.addEventListener("click", async (e) => {
     const btn = (e.target as HTMLElement)?.closest(
       "button.card-delete",
@@ -145,6 +176,41 @@ function renderRooms(rooms: RoomSummary[]): void {
   });
 }
 
+function setupRateControl(rooms: RoomSummary[], getRange: () => SummaryRange): number {
+  let rate = getElectricityRatePerKWh();
+  const input = document.getElementById("electricityRate") as HTMLInputElement;
+  const note = document.getElementById("rateNote")!;
+  const dialog = document.getElementById("settingsDialog") as HTMLDialogElement;
+  const toggle = document.getElementById("settingsToggle") as HTMLButtonElement;
+  const close = document.getElementById("settingsClose") as HTMLButtonElement;
+  input.value = rate.toFixed(4);
+  note.textContent = `Saved in this browser. Default is ${fmtMoney(DEFAULT_ELECTRICITY_RATE_PER_KWH)}/kWh.`;
+
+  toggle.addEventListener("click", () => {
+    dialog.showModal();
+    input.focus();
+  });
+  close.addEventListener("click", () => dialog.close());
+  dialog.addEventListener("click", (e) => {
+    if (e.target === dialog) dialog.close();
+  });
+
+  input.addEventListener("input", () => {
+    const next = Number(input.value);
+    if (!Number.isFinite(next) || next <= 0) {
+      note.textContent = "Enter a positive dollar-per-kWh rate.";
+      return;
+    }
+    rate = next;
+    saveElectricityRatePerKWh(rate);
+    note.textContent = "Saved in this browser.";
+    renderTotals(rooms, rate, getRange());
+    renderRooms(rooms, rate, getRange());
+  });
+
+  return rate;
+}
+
 function escapeHtml(s: string): string {
   return s.replace(
     /[&<>"']/g,
@@ -153,9 +219,44 @@ function escapeHtml(s: string): string {
   );
 }
 
-async function renderChart(bucket: "hour" | "day" | "month", days: number): Promise<void> {
+function chartRange(range: ChartRange): {
+  bucket: "hour" | "day" | "month";
+  from: Date;
+  title: string;
+} {
   const to = new Date();
-  const from = new Date(to.getTime() - days * 24 * 60 * 60 * 1000);
+  if (range === "24h") {
+    return {
+      bucket: "hour",
+      from: new Date(to.getTime() - 24 * 60 * 60 * 1000),
+      title: "House total · last 24 hours",
+    };
+  }
+  if (range === "7d") {
+    return {
+      bucket: "day",
+      from: new Date(to.getTime() - 7 * 24 * 60 * 60 * 1000),
+      title: "House total · last 7 days",
+    };
+  }
+  if (range === "1y") {
+    return {
+      bucket: "month",
+      from: new Date(to.getTime() - 365 * 24 * 60 * 60 * 1000),
+      title: "House total · last year",
+    };
+  }
+  return {
+    bucket: "day",
+    from: new Date(to.getTime() - 30 * 24 * 60 * 60 * 1000),
+    title: "House total · last 30 days",
+  };
+}
+
+async function renderChart(range: ChartRange): Promise<void> {
+  const to = new Date();
+  const { bucket, from, title } = chartRange(range);
+  document.getElementById("chartTitle")!.textContent = title;
   const url = `/api/series?from=${from.toISOString()}&to=${to.toISOString()}&bucket=${bucket}`;
   const data = await jget<SeriesResp>(url);
 
@@ -230,12 +331,14 @@ async function main(): Promise<void> {
   // Room cards first (one server-side pass), chart loads separately so the
   // page feels responsive even when readings.jsonl is large.
   const { rooms } = await jget<{ rooms: RoomSummary[] }>("/api/rooms");
-  renderTotals(rooms);
-  renderRooms(rooms);
+  let summaryRange: SummaryRange = "7d";
+  let rate = setupRateControl(rooms, () => summaryRange);
+  renderTotals(rooms, rate, summaryRange);
+  renderRooms(rooms, rate, summaryRange);
+  attachRoomActions();
 
-  let bucket: "hour" | "day" | "month" = "day";
-  let days = 30;
-  void renderChart(bucket, days).catch((err) => {
+  let activeChartRange: ChartRange = "30d";
+  void renderChart(activeChartRange).catch((err) => {
     console.error("chart failed:", err);
     document.getElementById("totalChart")?.parentElement?.insertAdjacentHTML(
       "afterend",
@@ -243,15 +346,26 @@ async function main(): Promise<void> {
     );
   });
 
-  const toggle = document.getElementById("ranges")!;
+  const toggle = document.getElementById("summaryRanges")!;
   toggle.addEventListener("click", async (e) => {
     const t = e.target as HTMLElement;
     if (t.tagName !== "BUTTON") return;
     toggle.querySelectorAll("button").forEach((b) => b.classList.remove("active"));
     t.classList.add("active");
-    bucket = t.dataset.bucket as typeof bucket;
-    days = Number(t.dataset.days);
-    await renderChart(bucket, days);
+    summaryRange = t.dataset.summaryRange as SummaryRange;
+    rate = getElectricityRatePerKWh();
+    renderTotals(rooms, rate, summaryRange);
+    renderRooms(rooms, rate, summaryRange);
+  });
+
+  const chartToggle = document.getElementById("ranges")!;
+  chartToggle.addEventListener("click", async (e) => {
+    const t = e.target as HTMLElement;
+    if (t.tagName !== "BUTTON") return;
+    chartToggle.querySelectorAll("button").forEach((b) => b.classList.remove("active"));
+    t.classList.add("active");
+    activeChartRange = t.dataset.chartRange as ChartRange;
+    await renderChart(activeChartRange);
   });
 }
 

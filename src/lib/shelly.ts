@@ -39,6 +39,10 @@ export type Normalized = {
   hasReading: boolean;
   /** LAN IP the device self-reported (from `wifi.sta_ip`), if any. */
   ip?: string;
+  /** True when the payload included a controllable Shelly switch component. */
+  hasSwitch: boolean;
+  /** Last reported relay output state for switch-capable devices. */
+  switchOutput?: boolean;
 };
 
 /** IPv4 dotted-quad sanity check. We don't care about exact validity — just
@@ -111,7 +115,13 @@ function tsFromBody(body: unknown): string {
   return new Date().toISOString();
 }
 
-type Acc = { powerW: number; totalEnergyWh: number; seen: boolean };
+type Acc = {
+  powerW: number;
+  totalEnergyWh: number;
+  seen: boolean;
+  hasSwitch: boolean;
+  switchOutput?: boolean;
+};
 
 function accumulateKeyed(obj: Record<string, unknown>, acc: Acc): void {
   // em1:N (instantaneous, single-phase per-channel), em1data:N (cumulative),
@@ -124,6 +134,10 @@ function accumulateKeyed(obj: Record<string, unknown>, acc: Acc): void {
     const component = m[1] ?? key.split(":")[0];
     const isData = m[2] === "data";
     const v = val as Record<string, unknown>;
+    if (component === "switch") {
+      acc.hasSwitch = true;
+      if (typeof v["output"] === "boolean") acc.switchOutput = v["output"];
+    }
 
     if (isData) {
       const total = energyTotal(v);
@@ -159,7 +173,7 @@ export function normalizeShelly(
   query: URLSearchParams,
 ): Normalized {
   const ts = tsFromBody(body);
-  const acc: Acc = { powerW: 0, totalEnergyWh: 0, seen: false };
+  const acc: Acc = { powerW: 0, totalEnergyWh: 0, seen: false, hasSwitch: false };
 
   if (body && typeof body === "object") {
     const b = body as Record<string, unknown>;
@@ -187,5 +201,7 @@ export function normalizeShelly(
     totalEnergyWh: acc.totalEnergyWh,
     hasReading: acc.seen,
     ip: ipFromBody(body),
+    hasSwitch: acc.hasSwitch,
+    switchOutput: acc.switchOutput,
   };
 }

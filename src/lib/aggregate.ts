@@ -40,6 +40,10 @@ export type LatestReading = {
 export type RoomSummaryMetrics = {
   leaseKWh: number;
   monthKWh: number;
+  dayKWh: number;
+  weekKWh: number;
+  thirtyDayKWh: number;
+  allTimeKWh: number;
   powerW: number | null;
   lastSeen: string | null;
 };
@@ -166,18 +170,33 @@ export async function computeAllRoomSummaries(
 ): Promise<Map<string, RoomSummaryMetrics>> {
   const nowMs = now.getTime();
   const monthFromMs = monthStartMs(now);
+  const dayFromMs = nowMs - 24 * 60 * 60 * 1000;
+  const weekFromMs = nowMs - 7 * 24 * 60 * 60 * 1000;
+  const thirtyDayFromMs = nowMs - 30 * 24 * 60 * 60 * 1000;
   const leaseFromMs = new Map<string, number>();
   const leaseKWh = new Map<string, number>();
   const monthKWh = new Map<string, number>();
+  const dayKWh = new Map<string, number>();
+  const weekKWh = new Map<string, number>();
+  const thirtyDayKWh = new Map<string, number>();
+  const allTimeKWh = new Map<string, number>();
   const out = new Map<string, RoomSummaryMetrics>();
 
   for (const [roomId, room] of Object.entries(cfg.rooms)) {
     leaseFromMs.set(roomId, leaseStartMs(room));
     leaseKWh.set(roomId, 0);
     monthKWh.set(roomId, 0);
+    dayKWh.set(roomId, 0);
+    weekKWh.set(roomId, 0);
+    thirtyDayKWh.set(roomId, 0);
+    allTimeKWh.set(roomId, 0);
     out.set(roomId, {
       leaseKWh: 0,
       monthKWh: 0,
+      dayKWh: 0,
+      weekKWh: 0,
+      thirtyDayKWh: 0,
+      allTimeKWh: 0,
       powerW: null,
       lastSeen: null,
     });
@@ -197,12 +216,24 @@ export async function computeAllRoomSummaries(
   })) {
     if (!shouldUseRollup(row, ctx)) continue;
     const tsMs = new Date(row.date + "T00:00:00Z").getTime();
+    if (tsMs < nowMs) {
+      allTimeKWh.set(row.room, (allTimeKWh.get(row.room) ?? 0) + row.energyKWh);
+    }
     const lf = leaseFromMs.get(row.room);
     if (lf !== undefined && tsMs >= lf && tsMs < nowMs) {
       leaseKWh.set(row.room, (leaseKWh.get(row.room) ?? 0) + row.energyKWh);
     }
     if (tsMs >= monthFromMs && tsMs < nowMs) {
       monthKWh.set(row.room, (monthKWh.get(row.room) ?? 0) + row.energyKWh);
+    }
+    if (tsMs >= dayFromMs && tsMs < nowMs) {
+      dayKWh.set(row.room, (dayKWh.get(row.room) ?? 0) + row.energyKWh);
+    }
+    if (tsMs >= weekFromMs && tsMs < nowMs) {
+      weekKWh.set(row.room, (weekKWh.get(row.room) ?? 0) + row.energyKWh);
+    }
+    if (tsMs >= thirtyDayFromMs && tsMs < nowMs) {
+      thirtyDayKWh.set(row.room, (thirtyDayKWh.get(row.room) ?? 0) + row.energyKWh);
     }
   }
 
@@ -227,12 +258,24 @@ export async function computeAllRoomSummaries(
     const kwh = delta / 1000;
     const roomId = r.room;
 
+    if (tsMs < nowMs) {
+      allTimeKWh.set(roomId, (allTimeKWh.get(roomId) ?? 0) + kwh);
+    }
     const lf = leaseFromMs.get(roomId);
     if (lf !== undefined && tsMs >= lf && tsMs < nowMs) {
       leaseKWh.set(roomId, (leaseKWh.get(roomId) ?? 0) + kwh);
     }
     if (tsMs >= monthFromMs && tsMs < nowMs) {
       monthKWh.set(roomId, (monthKWh.get(roomId) ?? 0) + kwh);
+    }
+    if (tsMs >= dayFromMs && tsMs < nowMs) {
+      dayKWh.set(roomId, (dayKWh.get(roomId) ?? 0) + kwh);
+    }
+    if (tsMs >= weekFromMs && tsMs < nowMs) {
+      weekKWh.set(roomId, (weekKWh.get(roomId) ?? 0) + kwh);
+    }
+    if (tsMs >= thirtyDayFromMs && tsMs < nowMs) {
+      thirtyDayKWh.set(roomId, (thirtyDayKWh.get(roomId) ?? 0) + kwh);
     }
   }
 
@@ -247,6 +290,10 @@ export async function computeAllRoomSummaries(
   for (const [roomId, entry] of out) {
     entry.leaseKWh = leaseKWh.get(roomId) ?? 0;
     entry.monthKWh = monthKWh.get(roomId) ?? 0;
+    entry.dayKWh = dayKWh.get(roomId) ?? 0;
+    entry.weekKWh = weekKWh.get(roomId) ?? 0;
+    entry.thirtyDayKWh = thirtyDayKWh.get(roomId) ?? 0;
+    entry.allTimeKWh = allTimeKWh.get(roomId) ?? 0;
     if (!entry.lastSeen) entry.powerW = null;
   }
 
