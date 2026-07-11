@@ -106,6 +106,10 @@ function pickEmFields(status) {
   for (let k in status) {
     if (isMeterKey(k)) out[k] = status[k];
   }
+  if (typeof Shelly.getDeviceInfo === "function") {
+    let d = Shelly.getDeviceInfo();
+    if (d) out.device = { id: d.id, model: d.model, app: d.app, gen: d.gen };
+  }
   return out;
 }
 
