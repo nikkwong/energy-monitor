@@ -39,6 +39,7 @@ a {
   max-width: 1100px;
   margin: 0 auto;
   padding: 32px 24px 64px;
+  min-width: 0;
 }
 
 header.top {
@@ -69,6 +70,7 @@ header.top .crumbs a:hover {
   display: flex;
   align-items: center;
   gap: 12px;
+  min-width: 0;
 }
 
 .btn-text {
@@ -503,15 +505,91 @@ header.top .crumbs a:hover {
 
 .grid.stats {
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.stats-carousel {
+  position: relative;
   margin-bottom: 20px;
+}
+
+.stats-nav {
+  display: none;
+}
+
+@media (max-width: 640px) {
+  .stats-carousel {
+    display: block;
+    max-width: 100%;
+  }
+
+  .stats-viewport {
+    width: 100%;
+    min-width: 0;
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .stats-viewport::-webkit-scrollbar {
+    display: none;
+  }
+
+  .grid.stats {
+    display: flex;
+    grid-template-columns: none;
+    gap: 12px;
+    padding: 0 1px;
+  }
+
+  .grid.stats .card {
+    flex: 0 0 calc((100% - 12px) / 2);
+    min-width: calc((100% - 12px) / 2);
+    scroll-snap-align: start;
+  }
+
+  .stats-nav {
+    display: inline-flex;
+    position: absolute;
+    top: 50%;
+    z-index: 2;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    transform: translateY(-50%);
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--text);
+    cursor: pointer;
+    font: 24px/1 system-ui, sans-serif;
+    line-height: 1;
+    padding: 0 0 2px;
+  }
+
+  #statsPrev {
+    left: 8px;
+  }
+
+  #statsNext {
+    right: 8px;
+  }
+
+  .stats-nav:disabled {
+    opacity: 0.3;
+    cursor: default;
+  }
 }
 
 .section-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 12px;
   margin: 0 0 12px;
+  min-width: 0;
 }
 
 .section-head h2 {
@@ -627,8 +705,10 @@ a.card.room:hover .card-delete {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
+  gap: 10px;
   font-size: 13px;
   padding: 4px 0;
+  min-width: 0;
 }
 
 .card.room .row .k {
@@ -638,6 +718,9 @@ a.card.room:hover .card-delete {
 .card.room .row .v {
   font-variant-numeric: tabular-nums;
   font-weight: 500;
+  min-width: 0;
+  text-align: right;
+  overflow-wrap: anywhere;
 }
 
 .dot {
@@ -690,13 +773,18 @@ a.card.room:hover .card-delete {
 
 .range-toggle {
   display: inline-flex;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 2px;
+  -webkit-overflow-scrolling: touch;
 }
 
 .range-toggle button {
+  flex: 0 0 auto;
   background: transparent;
   border: 0;
   color: var(--text-dim);

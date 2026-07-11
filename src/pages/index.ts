@@ -102,6 +102,38 @@ function renderTotals(rooms: RoomSummary[], ratePerKWh: number, range: SummaryRa
       <div class="sub">summed across active leases</div>
     </div>
   `;
+  updateStatsCarousel();
+}
+
+function updateStatsCarousel(): void {
+  const viewport = document.querySelector(".stats-viewport") as HTMLElement | null;
+  const el = document.getElementById("totals");
+  if (!viewport || !el) return;
+  const maxScroll = Math.max(0, viewport.scrollWidth - viewport.clientWidth);
+  const left = viewport.scrollLeft;
+  document.getElementById("statsPrev")?.toggleAttribute("disabled", left <= 1);
+  document.getElementById("statsNext")?.toggleAttribute("disabled", left >= maxScroll - 1);
+}
+
+function scrollStats(direction: -1 | 1): void {
+  const viewport = document.querySelector(".stats-viewport") as HTMLElement | null;
+  const el = document.getElementById("totals");
+  if (!el) return;
+  if (!viewport) return;
+  const firstCard = el.querySelector<HTMLElement>(".card");
+  const step = firstCard ? firstCard.offsetWidth + 12 : viewport.clientWidth;
+  viewport.scrollBy({
+    left: direction * step,
+    behavior: "smooth",
+  });
+}
+
+function attachStatsCarousel(): void {
+  const viewport = document.querySelector(".stats-viewport") as HTMLElement | null;
+  document.getElementById("statsPrev")?.addEventListener("click", () => scrollStats(-1));
+  document.getElementById("statsNext")?.addEventListener("click", () => scrollStats(1));
+  viewport?.addEventListener("scroll", updateStatsCarousel, { passive: true });
+  window.addEventListener("resize", updateStatsCarousel);
 }
 
 function renderRooms(rooms: RoomSummary[], ratePerKWh: number, range: SummaryRange): void {
@@ -345,6 +377,7 @@ async function main(): Promise<void> {
   renderTotals(rooms, rate, summaryRange);
   renderRooms(rooms, rate, summaryRange);
   attachRoomActions();
+  attachStatsCarousel();
 
   void renderChart(summaryRange).catch((err) => {
     console.error("chart failed:", err);

@@ -494,6 +494,14 @@ function renderStats(data: UsageResp): void {
       <div class="sub">${[rateText, monthBreakdown].filter(Boolean).join(" · ") || "&nbsp;"}</div>
     </div>
     <div class="card">
+      <div class="label">Right now</div>
+      <div class="value tabular">${fmtW(latest?.powerW ?? null)}</div>
+      <div class="sub">
+        <span class="dot ${cls}"></span>${fmtRelativeTime(latest?.ts ?? null)}
+        ${liveBreakdown ? `<div style="margin-top:4px;">${liveBreakdown}</div>` : ""}
+      </div>
+    </div>
+    <div class="card">
       <div class="label">Lease to date</div>
       <div class="value tabular">${fmtKWh(data.leaseUsage.energyKWh)}<span class="unit">kWh</span></div>
       <div class="cost tabular">${fmtMoney(data.leaseUsage.energyKWh * ratePerKWh)}</div>
@@ -501,14 +509,6 @@ function renderStats(data: UsageResp): void {
         data.currentLease ? `since ${data.currentLease.startDate}` : "no active lease",
         rateText,
       ].filter(Boolean).join(" · ")}</div>
-    </div>
-    <div class="card">
-      <div class="label">Right now</div>
-      <div class="value tabular">${fmtW(latest?.powerW ?? null)}</div>
-      <div class="sub">
-        <span class="dot ${cls}"></span>${fmtRelativeTime(latest?.ts ?? null)}
-        ${liveBreakdown ? `<div style="margin-top:4px;">${liveBreakdown}</div>` : ""}
-      </div>
     </div>
   `;
 }
