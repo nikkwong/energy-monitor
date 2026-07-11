@@ -246,7 +246,7 @@ const server = Bun.serve({
       const [lease, month, latest, bills] = await Promise.all([
         computeUsage({ room: roomId, from: leaseFrom, to: now }),
         computeUsage({ room: roomId, from: monthFrom, to: now }),
-        latestReading(roomId),
+        latestReading(roomId, now),
         computeMonthlyBills({ room: roomId, leases: r.leases, to: now }),
       ]);
       const roomOut = sanitizeRoom({ id: roomId, ...r });

@@ -48,6 +48,8 @@ export type RoomSummaryMetrics = {
   lastSeen: string | null;
 };
 
+const LIVE_POWER_MAX_AGE_MS = 5 * 60 * 1000;
+
 function bucketStartUTC(d: Date, bucket: Bucket): Date {
   const out = new Date(d.getTime());
   if (bucket === "hour") {
@@ -169,6 +171,7 @@ export async function computeAllRoomSummaries(
   now = new Date(),
 ): Promise<Map<string, RoomSummaryMetrics>> {
   const nowMs = now.getTime();
+  const livePowerFromMs = nowMs - LIVE_POWER_MAX_AGE_MS;
   const monthFromMs = monthStartMs(now);
   const dayFromMs = nowMs - 24 * 60 * 60 * 1000;
   const weekFromMs = nowMs - 7 * 24 * 60 * 60 * 1000;
@@ -283,7 +286,10 @@ export async function computeAllRoomSummaries(
     const roomId = roomFromCounterKey(key);
     const entry = out.get(roomId);
     if (!entry) continue;
-    entry.powerW = (entry.powerW ?? 0) + (r.powerW || 0);
+    const tsMs = new Date(r.ts).getTime();
+    if (tsMs >= livePowerFromMs && tsMs <= nowMs) {
+      entry.powerW = (entry.powerW ?? 0) + (r.powerW || 0);
+    }
     if (!entry.lastSeen || r.ts > entry.lastSeen) entry.lastSeen = r.ts;
   }
 
@@ -295,6 +301,7 @@ export async function computeAllRoomSummaries(
     entry.thirtyDayKWh = thirtyDayKWh.get(roomId) ?? 0;
     entry.allTimeKWh = allTimeKWh.get(roomId) ?? 0;
     if (!entry.lastSeen) entry.powerW = null;
+    else if (entry.powerW == null) entry.powerW = 0;
   }
 
   return out;
@@ -494,7 +501,7 @@ export async function computeSeries(opts: {
   return out;
 }
 
-export async function latestReading(room: string): Promise<LatestReading | null> {
+export async function latestReading(room: string, now = new Date()): Promise<LatestReading | null> {
   const perMonitor = new Map<string, Reading>();
   const ctx = await readFilterContext();
   for await (const r of iterReadings()) {
@@ -506,11 +513,15 @@ export async function latestReading(room: string): Promise<LatestReading | null>
 
   let mostRecent = "";
   let powerW = 0;
+  const nowMs = now.getTime();
+  const livePowerFromMs = nowMs - LIVE_POWER_MAX_AGE_MS;
   const monitors: LatestReading["monitors"] = {};
   for (const [id, r] of perMonitor) {
     if (r.ts > mostRecent) mostRecent = r.ts;
-    powerW += r.powerW || 0;
-    monitors[id] = { ts: r.ts, powerW: r.powerW, totalEnergyWh: r.totalEnergyWh };
+    const tsMs = new Date(r.ts).getTime();
+    const livePower = tsMs >= livePowerFromMs && tsMs <= nowMs ? r.powerW || 0 : 0;
+    powerW += livePower;
+    monitors[id] = { ts: r.ts, powerW: livePower, totalEnergyWh: r.totalEnergyWh };
   }
   return { ts: mostRecent, powerW, monitors };
 }

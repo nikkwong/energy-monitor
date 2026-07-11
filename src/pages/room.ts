@@ -98,6 +98,7 @@ let chart: Chart | null = null;
 let editMode = false;
 let roomData: UsageResp | null = null;
 let chartRange: RangeKey = "month";
+const DEVICE_STALE_MS = 60 * 1000;
 
 function localToday(): string {
   const d = new Date();
@@ -118,6 +119,15 @@ function escapeHtml(s: string): string {
     (c) =>
       ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!,
   );
+}
+
+function deviceStaleMarker(iso: string | null | undefined): string {
+  if (!iso) {
+    return `<span class="device-alert" title="No readings from this device yet" aria-label="No readings from this device yet">!</span>`;
+  }
+  const age = Date.now() - new Date(iso).getTime();
+  if (age <= DEVICE_STALE_MS) return "";
+  return `<span class="device-alert" title="No updates!" aria-label="No updates!">!</span>`;
 }
 
 function showError(msg: string): void {
@@ -141,9 +151,10 @@ function renderHeader(data: UsageResp): void {
     .map((id) => {
       const m = monitors[id]!;
       const label = escapeHtml(displayMonitorLabel(m, id));
-      if (!m.ip) return label;
+      const alert = deviceStaleMarker(data.latest?.monitors[id]?.ts);
+      if (!m.ip) return `${label}${alert}`;
       const ip = escapeHtml(m.ip);
-      return `<a href="http://${ip}" target="_blank" rel="noopener" title="Shelly admin · ${ip}">${label}</a>`;
+      return `<a href="http://${ip}" target="_blank" rel="noopener" title="Shelly admin · ${ip}">${label}</a>${alert}`;
     });
   const devicesLine = devicePieces.length
     ? `<span class="muted">devices:</span> ${devicePieces.join(" · ")}`
