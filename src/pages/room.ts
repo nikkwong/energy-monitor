@@ -99,6 +99,7 @@ let editMode = false;
 let roomData: UsageResp | null = null;
 let chartRange: RangeKey = "month";
 const DEVICE_STALE_MS = 60 * 1000;
+const ROOM_LIVE_REFRESH_MS = 5 * 1000;
 
 function localToday(): string {
   const d = new Date();
@@ -341,15 +342,22 @@ async function handleStartLease(roomId: string): Promise<void> {
   }
 }
 
-async function reloadRoom(roomId: string): Promise<void> {
+async function reloadRoom(
+  roomId: string,
+  opts: { renderChart?: boolean; renderEditPanel?: boolean } = {},
+): Promise<void> {
+  const renderChartAfterLoad = opts.renderChart ?? true;
+  const renderEditPanelAfterLoad = opts.renderEditPanel ?? true;
   roomData = await jget<UsageResp>(`/api/rooms/${encodeURIComponent(roomId)}/usage`);
   renderHeader(roomData);
   renderStats(roomData);
   renderSwitchControls(roomData);
   renderBills(roomData);
-  if (editMode) renderEditPanel(roomData);
+  if (editMode && renderEditPanelAfterLoad) renderEditPanel(roomData);
   const leaseStart = roomData.currentLease?.startDate ?? null;
-  await renderChart(roomId, chartRange, leaseStart);
+  if (renderChartAfterLoad) {
+    await renderChart(roomId, chartRange, leaseStart);
+  }
 }
 
 function renderSwitchControls(data: UsageResp): void {
@@ -698,6 +706,27 @@ async function main(): Promise<void> {
     chartRange = t.dataset.range as RangeKey;
     const start = roomData?.currentLease?.startDate ?? null;
     await renderChart(roomId, chartRange, start);
+  });
+
+  let liveRefreshInFlight = false;
+  window.setInterval(() => {
+    if (document.hidden || liveRefreshInFlight) return;
+    liveRefreshInFlight = true;
+    void reloadRoom(roomId, { renderChart: false, renderEditPanel: false })
+      .catch((err) => console.warn("room live refresh failed:", err))
+      .finally(() => {
+        liveRefreshInFlight = false;
+      });
+  }, ROOM_LIVE_REFRESH_MS);
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden || liveRefreshInFlight) return;
+    liveRefreshInFlight = true;
+    void reloadRoom(roomId, { renderChart: false, renderEditPanel: false })
+      .catch((err) => console.warn("room live refresh failed:", err))
+      .finally(() => {
+        liveRefreshInFlight = false;
+      });
   });
 }
 
