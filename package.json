@@ -13,7 +13,8 @@
     "prune": "bun run scripts/prune-defaults.ts",
     "prune:mock-rooms": "bun run scripts/prune-defaults.ts --mock-rooms",
     "migrate:readings": "bun run scripts/migrate-readings.ts",
-    "rollup": "bun run scripts/rollup-old-readings.ts"
+    "rollup": "bun run scripts/rollup-old-readings.ts",
+    "rebuild:index": "bun run scripts/rebuild-hourly-store.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",

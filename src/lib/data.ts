@@ -9,6 +9,7 @@ import {
 import { resolve } from "node:path";
 import type { DailyRollup, Lease, Monitor, Reading, RoomsConfig } from "./types.ts";
 import { DEFAULT_MONITOR_ID, roomUsesNamedMonitors } from "./monitors.ts";
+import { hourlyStore, hourlyStoreReady } from "./hourly-store.ts";
 
 const DATA_DIR = resolve(process.cwd(), "data");
 const ROOMS_PATH = resolve(DATA_DIR, "rooms.json");
@@ -108,7 +109,12 @@ export async function appendReading(r: Reading): Promise<void> {
   await mkdir(READINGS_DIR, { recursive: true });
   const line = JSON.stringify(r) + "\n";
   const path = monthlyReadingPath(monthKeyFromReading(r));
-  await enqueue(() => appendFile(path, line, "utf8"));
+  await enqueue(async () => {
+    // JSONL remains the recovery/source-of-truth stream. The compact SQLite
+    // store is a rebuildable query index with one energy row per hour.
+    await appendFile(path, line, "utf8");
+    if (hourlyStoreReady()) hourlyStore().addReading(r);
+  });
 }
 
 /**

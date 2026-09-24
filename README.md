@@ -127,20 +127,43 @@ This writes daily rows like:
 ```
 
 Archived raw shards land in `data/archive/readings/*.jsonl.gz`. The dashboard
-uses daily rollups for old usage and raw monthly shards for recent data.
+can rebuild its SQLite query index from daily rollups plus retained raw shards.
 
-### Why two files instead of one nested blob?
+### `data/usage.sqlite` (fast query index)
+
+Dashboard requests use a compact SQLite index containing one consumed-energy
+total per room, monitor, and UTC hour, plus each monitor's latest reading.
+Minute-level reports are still preserved in JSONL, but they are not repeatedly
+parsed when the app opens.
+
+Build the index once after upgrading:
+
+```bash
+bun run rebuild:index          # prints instructions; changes nothing
+# Stop the dashboard service before the next command.
+bun run rebuild:index --apply
+```
+
+The rebuild imports daily rollups and retained raw readings, then atomically
+replaces `data/usage.sqlite`. If the index is absent or incomplete, the app
+continues using the slower JSONL reader instead of returning empty totals.
+
+Hourly rows store positive deltas from the Shelly's cumulative
+`totalEnergyWh` counter—not voltage and not sampled power. Day, month, and
+midnight lease boundaries remain exact. Ranges beginning partway through an
+hour estimate the overlapping fraction of that first hour.
+
+### Why keep JSONL and SQLite?
 
 - Telemetry and identity have very different write patterns. Telemetry
   appends every minute; lease config changes once a quarter. Mixing them
   forces read-modify-write on every Shelly post, which is fragile under
   concurrency.
 - Append-only NDJSON is crash-safe and trivially parseable.
-- Usage per lease / per month is **computed on demand** by walking the
-  cumulative-energy counter delta inside a window, so adjusting a lease
-  boundary just works without re-bucketing anything.
-- Readings are sharded by month, so normal queries only open the raw shards
-  they need plus daily rollups for old archived data.
+- JSONL preserves the raw Shelly payload and is the recovery source. SQLite is
+  a rebuildable, compact query index.
+- Usage remains based on cumulative-energy counter deltas, so changing a lease
+  boundary does not require rewriting telemetry.
 
 ## Project layout
 
@@ -150,8 +173,9 @@ src/
   lib/
     types.ts          # Shared types
     data.ts           # rooms.json + readings.jsonl I/O (serialized writes)
+    hourly-store.ts   # compact SQLite ingestion and indexed reads
     shelly.ts         # Forgiving Shelly payload normalizer
-    aggregate.ts      # Window usage + bucketed time series
+    aggregate.ts      # SQLite queries with JSONL fallback
   pages/
     index.html        # Overview
     index.ts
@@ -164,6 +188,7 @@ data/
   readings/           # monthly raw telemetry shards (gitignored)
   rollups/            # daily old-data summaries (gitignored)
   archive/readings/   # gzipped old raw shards (gitignored)
+  usage.sqlite        # rebuildable hourly query index (gitignored)
 ```
 
 ## Deployment notes

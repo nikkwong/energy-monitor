@@ -30,6 +30,7 @@ Storage in `data/` is deliberately split by write pattern:
 | `data/rooms.json` | atomic read-modify-write (write to `.tmp`, rename) | Operator-editable overlay metadata: room/monitor labels, lease history. Auto-grown on first POST from a new `(room, monitor)` pair. |
 | `data/readings/YYYY-MM.jsonl` | append-only NDJSON shards | One Shelly reading per line, raw payload preserved. The Shellys are the source of truth for "what monitors exist". |
 | `data/rollups/daily.jsonl` | append-only NDJSON | Daily kWh totals for old raw shards that have been gzipped/archived. |
+| `data/usage.sqlite` | rebuildable SQLite query index | One energy-total row per `(room, monitor, UTC hour)`, latest readings, and cumulative-counter state. |
 
 **Invariants**:
 
@@ -38,6 +39,11 @@ Storage in `data/` is deliberately split by write pattern:
  `ensureRoomAndMonitor` never interleave.
 - Raw reading shards are **never** rewritten in place. If a reading is bad, it's
  ignored at parse time. New ingests append to `data/readings/YYYY-MM.jsonl`.
+- JSONL remains the recovery/source-of-truth stream. `usage.sqlite` is the
+  compact query path and can be recreated with `bun run rebuild:index --apply`.
+  Stop the server during a rebuild so readings cannot arrive during the atomic
+  database replacement. Until a completed index exists, the app falls back to
+  scanning JSONL.
 - Legacy `data/readings.jsonl` is still read for compatibility. Run
  `bun run migrate:readings --apply` once in production to split it into
  monthly shards and move the monolith out of the request path.
@@ -52,12 +58,13 @@ Storage in `data/` is deliberately split by write pattern:
 - A "current lease" is the entry with `endDate === null`. Exactly zero or one
  per room. To turn over a tenant, set the existing lease's `endDate` and append a new one.
 
-**Computing usage**: raw shards are walked in append order and we sum
-**positive deltas** of `totalEnergyWh` per `(room, monitor)` whose timestamp
-falls in `[from, to)`. Daily rollups are added directly as kWh. We trust the
-meter's monotonic counter and ignore negative deltas (would indicate a meter
-reset). Don't replace this with "average power × duration" — the cumulative
-counter is more accurate.
+**Computing usage**: on ingest, sum **positive deltas** of `totalEnergyWh` per
+`(room, monitor)` into a UTC-hour row in `usage.sqlite`. Negative deltas are
+ignored as meter resets. Day/month/lease boundaries are exact because they are
+hour-aligned. A range beginning partway through an hour prorates that first
+hour, so arbitrary sub-hour boundaries are estimates. The JSONL fallback uses
+the exact raw counter deltas. Don't replace energy deltas with voltage or
+"average power × duration" — neither measures consumed energy accurately.
 
 **Reading shape**: flat, one tuple per device report:
 `{ ts, room, monitor, powerW, totalEnergyWh, raw? }`. Multi-channel devices
@@ -148,5 +155,9 @@ outside the repo (typically `/var/lib/5214`, symlinked).
  `tail -f data/readings/$(date -u +%Y-%m).jsonl | jq`.
 - **Migrate legacy telemetry**: `bun run migrate:readings --apply`.
 - **Roll up old telemetry**: `bun run rollup --before 2025-07 --apply`.
+- **Build/rebuild the fast query index**: stop the server, then run
+  `bun run rebuild:index --apply`. This imports daily rollups and retained raw
+  readings, atomically replaces `data/usage.sqlite`, and enables hourly SQLite
+  queries on the next start.
 - **Force a test reading**:
  `curl -X POST http://localhost:3000/api/ingest/301/default -H 'content-type: application/json' -d '{"params":{"ts":1714521600,"em1:0":{"act_power":120},"em1data:0":{"total_act_energy":12345}}}'`

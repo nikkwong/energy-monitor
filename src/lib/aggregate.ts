@@ -1,6 +1,11 @@
 import { iterDailyRollups, iterReadings, readRooms } from "./data.ts";
 import { visibleMonitorIds } from "./monitors.ts";
 import type { DailyRollup, Reading, RoomsConfig } from "./types.ts";
+import {
+  hourlyStore,
+  hourlyStoreReady,
+  type HourlyUsageRow,
+} from "./hourly-store.ts";
 
 export type Bucket = "hour" | "day" | "month";
 
@@ -49,6 +54,33 @@ export type RoomSummaryMetrics = {
 };
 
 const LIVE_POWER_MAX_AGE_MS = 5 * 60 * 1000;
+const HOUR_MS = 60 * 60 * 1000;
+
+function hourlyRowAllowed(
+  row: HourlyUsageRow,
+  ctx: { allowedRooms: Set<string>; monitorLists: Map<string, Set<string> | null> },
+  room?: string,
+): boolean {
+  if (room) {
+    if (row.room !== room) return false;
+  } else if (!ctx.allowedRooms.has(row.room)) {
+    return false;
+  }
+  const allow = ctx.monitorLists.get(row.room);
+  return !allow || allow.has(row.monitor);
+}
+
+/**
+ * Hourly rows are exact at hour/day/month boundaries. For a range beginning
+ * partway through an hour, estimate only the overlapping share of that first
+ * hour. The final (usually current) hour is kept whole because it contains
+ * only energy observed so far, not a projected full-hour total.
+ */
+function rangedEnergyWh(row: HourlyUsageRow, fromMs: number): number {
+  if (row.hourMs >= fromMs) return row.energyWh;
+  const overlap = Math.max(0, row.hourMs + HOUR_MS - fromMs);
+  return row.energyWh * (overlap / HOUR_MS);
+}
 
 function bucketStartUTC(d: Date, bucket: Bucket): Date {
   const out = new Date(d.getTime());
@@ -166,10 +198,86 @@ function monthLabel(d: Date): string {
  * Single-pass metrics for every room — powers GET /api/rooms. Replaces the
  * old pattern of 3 full-file scans per room (lease + month + latest).
  */
+function computeAllRoomSummariesHourly(
+  cfg: RoomsConfig,
+  now: Date,
+): Map<string, RoomSummaryMetrics> {
+  const nowMs = now.getTime();
+  const monthFromMs = monthStartMs(now);
+  const starts = {
+    day: nowMs - 24 * HOUR_MS,
+    week: nowMs - 7 * 24 * HOUR_MS,
+    thirtyDay: nowMs - 30 * 24 * HOUR_MS,
+  };
+  const leaseFromMs = new Map<string, number>();
+  const out = new Map<string, RoomSummaryMetrics>();
+  const monitorLists = monitorAllowlist(cfg);
+  const ctx = {
+    allowedRooms: new Set(Object.keys(cfg.rooms)),
+    monitorLists,
+  };
+
+  for (const [roomId, room] of Object.entries(cfg.rooms)) {
+    leaseFromMs.set(roomId, leaseStartMs(room));
+    out.set(roomId, {
+      leaseKWh: 0,
+      monthKWh: 0,
+      dayKWh: 0,
+      weekKWh: 0,
+      thirtyDayKWh: 0,
+      allTimeKWh: 0,
+      powerW: null,
+      lastSeen: null,
+    });
+  }
+
+  for (const row of hourlyStore().allUsageRows(now)) {
+    if (!hourlyRowAllowed(row, ctx)) continue;
+    const entry = out.get(row.room);
+    if (!entry) continue;
+    entry.allTimeKWh += row.energyWh / 1000;
+    const leaseFrom = leaseFromMs.get(row.room) ?? 0;
+    if (row.hourMs + HOUR_MS > leaseFrom) {
+      entry.leaseKWh += rangedEnergyWh(row, leaseFrom) / 1000;
+    }
+    if (row.hourMs + HOUR_MS > monthFromMs) {
+      entry.monthKWh += rangedEnergyWh(row, monthFromMs) / 1000;
+    }
+    if (row.hourMs + HOUR_MS > starts.day) {
+      entry.dayKWh += rangedEnergyWh(row, starts.day) / 1000;
+    }
+    if (row.hourMs + HOUR_MS > starts.week) {
+      entry.weekKWh += rangedEnergyWh(row, starts.week) / 1000;
+    }
+    if (row.hourMs + HOUR_MS > starts.thirtyDay) {
+      entry.thirtyDayKWh += rangedEnergyWh(row, starts.thirtyDay) / 1000;
+    }
+  }
+
+  const liveFromMs = nowMs - LIVE_POWER_MAX_AGE_MS;
+  for (const latest of hourlyStore().latest()) {
+    const entry = out.get(latest.room);
+    if (!entry) continue;
+    const allow = monitorLists.get(latest.room);
+    if (allow && !allow.has(latest.monitor)) continue;
+    if (!entry.lastSeen || latest.ts > entry.lastSeen) entry.lastSeen = latest.ts;
+    if (latest.tsMs >= liveFromMs && latest.tsMs <= nowMs) {
+      entry.powerW = (entry.powerW ?? 0) + (latest.powerW || 0);
+    }
+  }
+  for (const entry of out.values()) {
+    if (!entry.lastSeen) entry.powerW = null;
+    else if (entry.powerW == null) entry.powerW = 0;
+  }
+  return out;
+}
+
 export async function computeAllRoomSummaries(
   cfg: RoomsConfig,
   now = new Date(),
 ): Promise<Map<string, RoomSummaryMetrics>> {
+  if (hourlyStoreReady()) return computeAllRoomSummariesHourly(cfg, now);
+
   const nowMs = now.getTime();
   const livePowerFromMs = nowMs - LIVE_POWER_MAX_AGE_MS;
   const monthFromMs = monthStartMs(now);
@@ -313,6 +421,25 @@ export async function computeUsage(opts: {
   to: Date;
 }): Promise<UsageSummary> {
   const ctx = await readFilterContext();
+  if (hourlyStoreReady()) {
+    const monitors: Record<string, number> = {};
+    let totalKWh = 0;
+    for (const row of hourlyStore().usageRows(opts.from, opts.to)) {
+      if (!hourlyRowAllowed(row, ctx, opts.room)) continue;
+      const kwh = rangedEnergyWh(row, opts.from.getTime()) / 1000;
+      totalKWh += kwh;
+      if (opts.room) {
+        monitors[row.monitor] = (monitors[row.monitor] ?? 0) + kwh;
+      }
+    }
+    return {
+      from: opts.from.toISOString(),
+      to: opts.to.toISOString(),
+      energyKWh: totalKWh,
+      monitors,
+    };
+  }
+
   const last = new Map<string, number>();
   const monitors: Record<string, number> = {};
   let totalKWh = 0;
@@ -410,6 +537,27 @@ export async function computeMonthlyBills(opts: {
     return windows.find((w) => tsMs >= w.from.getTime() && tsMs < w.to.getTime());
   }
 
+  if (hourlyStoreReady()) {
+    for (const row of hourlyStore().usageRows(firstFrom, lastTo)) {
+      if (!hourlyRowAllowed(row, ctx, opts.room)) continue;
+      const w = windowForTs(row.hourMs);
+      if (!w) continue;
+      const energyKWh = rangedEnergyWh(row, w.from.getTime()) / 1000;
+      byKey.set(w.key, (byKey.get(w.key) ?? 0) + energyKWh);
+    }
+    return windows
+      .map((w) => ({
+        month: w.month,
+        tenant: w.tenant,
+        leaseId: w.leaseId,
+        from: w.from.toISOString(),
+        to: w.to.toISOString(),
+        energyKWh: byKey.get(w.key) ?? 0,
+        status: w.status,
+      }))
+      .sort((a, b) => b.from.localeCompare(a.from));
+  }
+
   for await (const row of iterDailyRollups({ from: firstFrom, to: lastTo })) {
     if (!shouldUseRollup(row, ctx, opts.room)) continue;
     const tsMs = new Date(row.date + "T00:00:00Z").getTime();
@@ -460,6 +608,19 @@ export async function computeSeries(opts: {
   const fromMs = opts.from.getTime();
   const toMs = opts.to.getTime();
 
+  if (hourlyStoreReady()) {
+    for (const row of hourlyStore().usageRows(opts.from, opts.to)) {
+      if (!hourlyRowAllowed(row, ctx, opts.room)) continue;
+      const bucketKey = bucketStartUTC(
+        new Date(row.hourMs),
+        opts.bucket,
+      ).getTime();
+      const kwh = rangedEnergyWh(row, fromMs) / 1000;
+      buckets.set(bucketKey, (buckets.get(bucketKey) ?? 0) + kwh);
+    }
+    return materializeSeries(buckets, opts.from, opts.to, opts.bucket);
+  }
+
   for await (const row of iterDailyRollups({ from: opts.from, to: opts.to })) {
     if (!shouldUseRollup(row, ctx, opts.room)) continue;
     const bucketKey = bucketStartUTC(
@@ -484,15 +645,24 @@ export async function computeSeries(opts: {
     buckets.set(bucketKey, (buckets.get(bucketKey) ?? 0) + delta / 1000);
   }
 
+  return materializeSeries(buckets, opts.from, opts.to, opts.bucket);
+}
+
+function materializeSeries(
+  buckets: Map<number, number>,
+  from: Date,
+  to: Date,
+  bucket: Bucket,
+): SeriesPoint[] {
   const out: SeriesPoint[] = [];
-  const cursor = bucketStartUTC(opts.from, opts.bucket);
-  const end = opts.to;
+  const cursor = bucketStartUTC(from, bucket);
+  const end = to;
   while (cursor < end) {
     const k = cursor.getTime();
     out.push({ ts: cursor.toISOString(), energyKWh: buckets.get(k) ?? 0 });
-    if (opts.bucket === "hour") {
+    if (bucket === "hour") {
       cursor.setUTCHours(cursor.getUTCHours() + 1);
-    } else if (opts.bucket === "day") {
+    } else if (bucket === "day") {
       cursor.setUTCDate(cursor.getUTCDate() + 1);
     } else {
       cursor.setUTCMonth(cursor.getUTCMonth() + 1);
@@ -502,6 +672,35 @@ export async function computeSeries(opts: {
 }
 
 export async function latestReading(room: string, now = new Date()): Promise<LatestReading | null> {
+  if (hourlyStoreReady()) {
+    const cfg = await readRooms();
+    const monitorLists = monitorAllowlist(cfg);
+    const rows = hourlyStore()
+      .latest(room)
+      .filter((row) => {
+        const allow = monitorLists.get(row.room);
+        return !allow || allow.has(row.monitor);
+      });
+    if (rows.length === 0) return null;
+    let mostRecent = "";
+    let powerW = 0;
+    const monitors: LatestReading["monitors"] = {};
+    const nowMs = now.getTime();
+    const liveFromMs = nowMs - LIVE_POWER_MAX_AGE_MS;
+    for (const row of rows) {
+      if (row.ts > mostRecent) mostRecent = row.ts;
+      const livePower =
+        row.tsMs >= liveFromMs && row.tsMs <= nowMs ? row.powerW || 0 : 0;
+      powerW += livePower;
+      monitors[row.monitor] = {
+        ts: row.ts,
+        powerW: livePower,
+        totalEnergyWh: row.totalEnergyWh,
+      };
+    }
+    return { ts: mostRecent, powerW, monitors };
+  }
+
   const perMonitor = new Map<string, Reading>();
   const ctx = await readFilterContext();
   for await (const r of iterReadings()) {
