@@ -148,13 +148,14 @@ If telemetry lives outside the checkout, set its absolute path explicitly for
 both the server and maintenance commands:
 
 ```bash
-DATA_DIR=/home/nikk/data bun run rebuild:index --apply
-DATA_DIR=/home/nikk/data bun run start
+DATA_DIR=/home/nikk/energy-monitor-data bun run rebuild:index --apply
 ```
 
-Set the same `DATA_DIR` in the systemd service environment. The rebuild prints
-the selected directory and refuses to activate an index with fewer than 100
-source rows unless `--allow-small` is supplied.
+For this deployment, `bun run start` already uses
+`/home/nikk/energy-monitor-data`; `DATA_DIR` can still override it when running
+the server directly. Maintenance commands require an explicit `DATA_DIR`.
+The rebuild prints the selected directory and refuses to activate an index
+with fewer than 100 source rows unless `--allow-small` is supplied.
 
 The rebuild imports daily rollups and retained raw readings, then atomically
 replaces `data/usage.sqlite`. If the index is absent or incomplete, the app
