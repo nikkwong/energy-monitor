@@ -139,6 +139,9 @@ function showError(msg: string): void {
 function renderHeader(data: UsageResp): void {
   document.getElementById("roomTitle")!.textContent = data.room.label;
   document.title = `5214 · ${data.room.label}`;
+  const rawLink = document.getElementById("rawDataLink") as HTMLAnchorElement;
+  rawLink.href = `/${encodeURIComponent(data.room.id)}/raw`;
+  rawLink.hidden = false;
 
   const lease = data.currentLease;
   const leaseLine = lease

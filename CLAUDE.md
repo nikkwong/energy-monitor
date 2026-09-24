@@ -92,9 +92,11 @@ route handler.**
 
 - `GET /` → `src/pages/index.html` — overview
 - `GET /:roomId` → `src/pages/room.html` — single room dashboard
+- `GET /:roomId/raw` → `src/pages/raw.html` — newest persisted raw reports
 - `GET /api/rooms` — summaries for all rooms
 - `GET /api/rooms/:roomId/usage` — month, lease-to-date, latest, per-monitor breakdown
 - `GET /api/rooms/:roomId/series?from=&to=&bucket=hour|day|month`
+- `GET /api/rooms/:roomId/raw?limit=100` — newest raw readings, capped at 200
 - `GET /api/series?from=&to=&bucket=…` — house total
 - `DELETE /api/rooms/:roomId` — remove a room from `rooms.json`. Readings stay on disk but are filtered out of every aggregation. Operator action; if a Shelly still POSTs this room id it'll auto-register on its next POST.
 - `POST /api/ingest/:roomId/:monitorId` — Shelly webhook (one path per device)

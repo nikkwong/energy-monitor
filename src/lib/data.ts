@@ -538,6 +538,74 @@ export async function* iterReadings(opts?: {
   }
 }
 
+async function recentReadingsFromFile(
+  path: string,
+  room: string,
+  limit: number,
+): Promise<Reading[]> {
+  const file = Bun.file(path);
+  if (!(await file.exists())) return [];
+
+  const out: Reading[] = [];
+  const chunkSize = 64 * 1024;
+  let position = file.size;
+  let carry = Buffer.alloc(0);
+
+  while (position > 0 && out.length < limit) {
+    const start = Math.max(0, position - chunkSize);
+    const chunk = Buffer.from(await file.slice(start, position).arrayBuffer());
+    const bytes = Buffer.concat([chunk, carry]);
+    const firstNewline = bytes.indexOf(10);
+    const completeFrom =
+      start > 0
+        ? firstNewline === -1
+          ? bytes.length
+          : firstNewline + 1
+        : 0;
+    carry =
+      start > 0
+        ? firstNewline === -1
+          ? bytes
+          : bytes.subarray(0, firstNewline)
+        : Buffer.alloc(0);
+    const lines = bytes.subarray(completeFrom).toString("utf8").split("\n");
+
+    for (let i = lines.length - 1; i >= 0 && out.length < limit; i--) {
+      const line = lines[i]?.trim();
+      if (!line) continue;
+      try {
+        const reading = coerceReading(JSON.parse(line));
+        if (reading?.room === room) out.push(reading);
+      } catch {
+        // Skip malformed lines.
+      }
+    }
+    position = start;
+  }
+
+  return out;
+}
+
+/**
+ * Read the newest raw readings without parsing whole monthly shards. Files and
+ * chunks are walked backwards because telemetry is append-only.
+ */
+export async function recentReadings(
+  room: string,
+  limit = 100,
+): Promise<Reading[]> {
+  const files = (await monthlyReadingFiles()).reverse();
+  files.push(READINGS_PATH);
+  const out: Reading[] = [];
+  for (const path of files) {
+    if (out.length >= limit) break;
+    out.push(
+      ...(await recentReadingsFromFile(path, room, limit - out.length)),
+    );
+  }
+  return out.sort((a, b) => b.ts.localeCompare(a.ts)).slice(0, limit);
+}
+
 export async function appendDailyRollups(rows: DailyRollup[]): Promise<void> {
   if (rows.length === 0) return;
   await ensureDataDir();

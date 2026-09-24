@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>5214 · Raw data</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="container">
+      <header class="top">
+        <h1 id="rawTitle">Raw data</h1>
+        <div class="crumbs">
+          <a id="roomLink" href="/">← room</a>
+        </div>
+      </header>
+
+      <p class="subtitle">
+        Newest stored Shelly reports for this room. Raw payloads are shown exactly as received.
+      </p>
+
+      <div id="errorBox"></div>
+
+      <div class="chart-card">
+        <div class="head">
+          <h2>Recent readings</h2>
+          <div class="debug-controls">
+            <label for="readingLimit">Show</label>
+            <select id="readingLimit">
+              <option value="25">25</option>
+              <option value="50">50</option>
+              <option value="100" selected>100</option>
+              <option value="200">200</option>
+            </select>
+            <button id="refreshBtn" type="button">Refresh</button>
+          </div>
+        </div>
+        <div id="rawReadings"></div>
+      </div>
+    </div>
+    <script type="module" src="./raw.ts"></script>
+  </body>
+</html>

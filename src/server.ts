@@ -1,5 +1,6 @@
 import index from "./pages/index.html";
 import room from "./pages/room.html";
+import rawReadings from "./pages/raw.html";
 import debug from "./pages/debug.html";
 
 import {
@@ -11,6 +12,7 @@ import {
   LeaseError,
   MonitorSwitchError,
   readRooms,
+  recentReadings,
   setMonitorSwitchDesired,
   startLease,
 } from "./lib/data.ts";
@@ -288,6 +290,25 @@ const server = Bun.serve({
       return Response.json({ from: from.toISOString(), to: to.toISOString(), bucket, series });
     },
 
+    "/api/rooms/:roomId/raw": async (req) => {
+      const { roomId } = req.params;
+      if (!ROOM_ID_RE.test(roomId)) return badRequest("invalid roomId");
+      const cfg = await readRooms();
+      const roomConfig = cfg.rooms[roomId];
+      if (!roomConfig) {
+        return Response.json({ error: "no such room" }, { status: 404 });
+      }
+      const requested = Number(new URL(req.url).searchParams.get("limit") ?? 100);
+      const limit = Math.min(200, Math.max(1, Number.isFinite(requested) ? requested : 100));
+      const readings = await recentReadings(roomId, limit);
+      return Response.json({
+        roomId,
+        roomLabel: roomConfig.label,
+        limit,
+        readings,
+      });
+    },
+
     "/api/series": async (req) => {
       const url = new URL(req.url);
       const to = parseDate(url.searchParams.get("to"), new Date());
@@ -314,6 +335,7 @@ const server = Bun.serve({
 
     // Single-segment paths render the room page; the client reads the path
     // and fetches /api/rooms/:roomId/usage, which 404s gracefully for unknown rooms.
+    "/:roomId/raw": rawReadings,
     "/:roomId": room,
   },
 
