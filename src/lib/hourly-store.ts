@@ -18,7 +18,7 @@ export type LatestStoredReading = {
   totalEnergyWh: number;
 };
 
-const DATA_DIR = resolve(process.cwd(), "data");
+const DATA_DIR = resolve(process.env.DATA_DIR ?? resolve(process.cwd(), "data"));
 export const HOURLY_DB_PATH = resolve(DATA_DIR, "usage.sqlite");
 const HOUR_MS = 60 * 60 * 1000;
 

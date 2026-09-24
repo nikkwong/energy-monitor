@@ -14,7 +14,7 @@ import { appendFile, mkdir, readFile, readdir, rm, writeFile } from "node:fs/pro
 import { resolve } from "node:path";
 import type { DailyRollup, Reading } from "../src/lib/types.ts";
 
-const DATA_DIR = resolve(process.cwd(), "data");
+const DATA_DIR = resolve(process.env.DATA_DIR ?? resolve(process.cwd(), "data"));
 const READINGS_DIR = resolve(DATA_DIR, "readings");
 const ROLLUPS_DIR = resolve(DATA_DIR, "rollups");
 const ARCHIVE_DIR = resolve(DATA_DIR, "archive", "readings");

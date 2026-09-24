@@ -144,6 +144,18 @@ bun run rebuild:index          # prints instructions; changes nothing
 bun run rebuild:index --apply
 ```
 
+If telemetry lives outside the checkout, set its absolute path explicitly for
+both the server and maintenance commands:
+
+```bash
+DATA_DIR=/home/nikk/data bun run rebuild:index --apply
+DATA_DIR=/home/nikk/data bun run start
+```
+
+Set the same `DATA_DIR` in the systemd service environment. The rebuild prints
+the selected directory and refuses to activate an index with fewer than 100
+source rows unless `--allow-small` is supplied.
+
 The rebuild imports daily rollups and retained raw readings, then atomically
 replaces `data/usage.sqlite`. If the index is absent or incomplete, the app
 continues using the slower JSONL reader instead of returning empty totals.

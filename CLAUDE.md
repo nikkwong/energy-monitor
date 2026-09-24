@@ -44,6 +44,9 @@ Storage in `data/` is deliberately split by write pattern:
   Stop the server during a rebuild so readings cannot arrive during the atomic
   database replacement. Until a completed index exists, the app falls back to
   scanning JSONL.
+- Set `DATA_DIR` to the absolute persistent-data path in production (for
+  example `/home/nikk/data`) for both the server and maintenance commands.
+  Otherwise it defaults to `./data` under the process working directory.
 - Legacy `data/readings.jsonl` is still read for compatibility. Run
  `bun run migrate:readings --apply` once in production to split it into
  monthly shards and move the monolith out of the request path.

@@ -13,7 +13,7 @@ import { createWriteStream } from "node:fs";
 import { mkdir, rename } from "node:fs/promises";
 import { resolve } from "node:path";
 
-const DATA_DIR = resolve(process.cwd(), "data");
+const DATA_DIR = resolve(process.env.DATA_DIR ?? resolve(process.cwd(), "data"));
 const LEGACY_PATH = resolve(DATA_DIR, "readings.jsonl");
 const READINGS_DIR = resolve(DATA_DIR, "readings");
 const APPLY = process.argv.includes("--apply");

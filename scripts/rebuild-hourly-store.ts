@@ -15,16 +15,19 @@ import {
 import { iterDailyRollups, iterReadings } from "../src/lib/data.ts";
 
 const APPLY = process.argv.includes("--apply");
-const DATA_DIR = resolve(process.cwd(), "data");
+const ALLOW_SMALL = process.argv.includes("--allow-small");
+const DATA_DIR = resolve(process.env.DATA_DIR ?? resolve(process.cwd(), "data"));
 const TEMP_PATH = resolve(DATA_DIR, `usage.sqlite.rebuild-${process.pid}`);
 
 if (!APPLY) {
   console.log("Hourly SQLite store rebuild (dry run).");
+  console.log(`Data directory: ${DATA_DIR}`);
   console.log("Stop the dashboard, then run:");
   console.log("  bun run rebuild:index --apply");
   process.exit(0);
 }
 
+console.log(`reading source data from ${DATA_DIR}`);
 await mkdir(DATA_DIR, { recursive: true });
 await rm(TEMP_PATH, { force: true });
 const store = new HourlyStore(TEMP_PATH);
@@ -60,6 +63,14 @@ try {
       console.log(`imported ${readings.toLocaleString()} raw readings`);
     }
   }
+
+  if (!ALLOW_SMALL && readings + rollups < 100) {
+    throw new Error(
+      `refusing to activate an index built from only ${readings} readings and ` +
+        `${rollups} rollups; check DATA_DIR or pass --allow-small if intentional`,
+    );
+  }
+
   store.db.run("COMMIT");
   store.markReady();
   store.db.run("ANALYZE");

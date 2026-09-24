@@ -11,7 +11,7 @@ import type { DailyRollup, Lease, Monitor, Reading, RoomsConfig } from "./types.
 import { DEFAULT_MONITOR_ID, roomUsesNamedMonitors } from "./monitors.ts";
 import { hourlyStore, hourlyStoreReady } from "./hourly-store.ts";
 
-const DATA_DIR = resolve(process.cwd(), "data");
+const DATA_DIR = resolve(process.env.DATA_DIR ?? resolve(process.cwd(), "data"));
 const ROOMS_PATH = resolve(DATA_DIR, "rooms.json");
 const READINGS_DIR = resolve(DATA_DIR, "readings");
 const READINGS_PATH = resolve(DATA_DIR, "readings.jsonl");
