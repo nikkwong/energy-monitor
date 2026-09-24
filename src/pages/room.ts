@@ -98,7 +98,9 @@ let chart: Chart | null = null;
 let editMode = false;
 let roomData: UsageResp | null = null;
 let chartRange: RangeKey = "month";
-const DEVICE_STALE_MS = 60 * 1000;
+// Reporters post every 60 seconds. Allow several missed/jittered intervals
+// before showing the unavailable warning.
+const DEVICE_STALE_MS = 5 * 60 * 1000;
 const ROOM_LIVE_REFRESH_MS = 5 * 1000;
 
 function localToday(): string {
@@ -447,6 +449,7 @@ function formatBillRange(from: string, to: string): string {
 function renderBills(data: UsageResp): void {
   const el = document.getElementById("bills")!;
   const bills = data.bills ?? [];
+  const ratePerKWh = getElectricityRatePerKWh();
   if (bills.length === 0) {
     el.innerHTML = `<div class="empty">No lease history yet, so there are no monthly bills.</div>`;
     return;
@@ -464,7 +467,10 @@ function renderBills(data: UsageResp): void {
                   ${escapeHtml(b.tenant)} · ${escapeHtml(formatBillRange(b.from, b.to))}
                 </div>
               </div>
-              <div class="bill-kwh tabular">${fmtKWh(b.energyKWh)} kWh</div>
+              <div class="bill-usage tabular">
+                <div class="bill-kwh">${fmtKWh(b.energyKWh)} kWh</div>
+                <div class="bill-cost">${fmtMoney(b.energyKWh * ratePerKWh)}</div>
+              </div>
               <span class="bill-status ${b.status === "in_progress" ? "progress" : "final"}">
                 ${b.status === "in_progress" ? "in progress" : "final"}
               </span>
