@@ -18,6 +18,7 @@ import {
   getElectricityRatePerKWh,
   jget,
   jpost,
+  jput,
 } from "./common.ts";
 import {
   displayMonitorLabel,
@@ -71,6 +72,8 @@ type UsageResp = {
   currentLease: Lease | null;
   leaseUsage: Usage;
   monthUsage: Usage;
+  todayUsage: Usage;
+  leaseTotals?: Record<string, number>;
   bills?: Array<{
     month: string;
     tenant: string;
@@ -111,6 +114,19 @@ function localToday(): string {
   return `${y}-${m}-${day}`;
 }
 
+function startOfTodayLocal(): Date {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function fetchRoomUsage(roomId: string): Promise<UsageResp> {
+  const todayFrom = startOfTodayLocal().toISOString();
+  return jget<UsageResp>(
+    `/api/rooms/${encodeURIComponent(roomId)}/usage?todayFrom=${encodeURIComponent(todayFrom)}`,
+  );
+}
+
 function getRoomId(): string {
   const path = window.location.pathname.replace(/^\/+|\/+$/g, "");
   return decodeURIComponent(path);
@@ -147,7 +163,7 @@ function renderHeader(data: UsageResp): void {
 
   const lease = data.currentLease;
   const leaseLine = lease
-    ? `${escapeHtml(lease.tenant)} · lease started ${lease.startDate}`
+    ? `lease started ${escapeHtml(lease.startDate)}`
     : `<span class="muted">no active lease</span>`;
 
   // Each monitor with a known IP becomes a clickable link to its admin UI.
@@ -188,82 +204,95 @@ function monitorLabelHtml(room: Room, id: string): string {
   return `<a href="http://${escapeHtml(ip)}" target="_blank" rel="noopener" title="Open ${escapeHtml(ip)} (Shelly admin)">${safeLabel}</a>`;
 }
 
+function leaseEnergyKWh(data: UsageResp, leaseId: string): number {
+  if (data.leaseTotals && leaseId in data.leaseTotals) {
+    return data.leaseTotals[leaseId] ?? 0;
+  }
+  return (data.bills ?? [])
+    .filter((b) => b.leaseId === leaseId)
+    .reduce((sum, b) => sum + b.energyKWh, 0);
+}
+
+function isPlausibleIsoDate(v: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
+  const year = Number(v.slice(0, 4));
+  if (year < 2000 || year > 2100) return false;
+  const d = new Date(v + "T00:00:00Z");
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v;
+}
+
+function monthBeforeIso(isoDate: string): string {
+  const d = new Date(isoDate + "T00:00:00Z");
+  d.setUTCMonth(d.getUTCMonth() - 1);
+  return d.toISOString().slice(0, 10);
+}
+
 function renderEditPanel(data: UsageResp): void {
   const panel = document.getElementById("editPanel")!;
-  const current = data.currentLease;
+  const ratePerKWh = getElectricityRatePerKWh();
   const history = [...data.room.leases].reverse();
 
   const historyRows = history.length
-    ? history
-        .map((l) => {
-          const end = l.endDate ?? "present";
-          const active = l.endDate === null ? ' <span class="muted">(current)</span>' : "";
-          return `<tr>
-            <td>${escapeHtml(l.tenant)}${active}</td>
-            <td class="tabular">${escapeHtml(l.startDate)}</td>
-            <td class="tabular">${escapeHtml(end)}</td>
-          </tr>`;
-        })
-        .join("")
-    : `<tr><td colspan="3" class="muted">No lease history yet.</td></tr>`;
+    ? `<div class="lease-list">
+        ${history
+          .map((l) => {
+            const kwh = leaseEnergyKWh(data, l.id);
+            const idAttr = escapeHtml(l.id);
+            return `
+              <div class="lease-row" data-lease-row="${idAttr}">
+                <div class="lease-dates">
+                  <input
+                    type="date"
+                    class="lease-date-input tabular"
+                    data-lease-id="${idAttr}"
+                    data-field="startDate"
+                    value="${escapeHtml(l.startDate)}"
+                    aria-label="Lease start date"
+                  />
+                  <span class="lease-date-sep">–</span>
+                  <input
+                    type="date"
+                    class="lease-date-input tabular"
+                    data-lease-id="${idAttr}"
+                    data-field="endDate"
+                    value="${escapeHtml(l.endDate ?? "")}"
+                    aria-label="Lease end date"
+                  />
+                  <span class="lease-current-tag" data-lease-current="${idAttr}">${
+                    l.endDate === null ? "current" : ""
+                  }</span>
+                </div>
+                <div class="lease-row-right">
+                  <div class="lease-usage tabular" data-lease-usage="${idAttr}">
+                    <div class="lease-kwh">${fmtKWh(kwh)} kWh</div>
+                    <div class="lease-cost">${fmtMoney(kwh * ratePerKWh)}</div>
+                  </div>
+                  <button
+                    type="button"
+                    class="lease-delete"
+                    data-delete-lease="${idAttr}"
+                    title="Remove lease"
+                    aria-label="Remove lease"
+                  >×</button>
+                </div>
+              </div>
+            `;
+          })
+          .join("")}
+      </div>`
+    : `<div class="lease-empty muted">No lease history yet. Click + to add a tenant.</div>`;
 
   panel.innerHTML = `
-    <h2>Lease management</h2>
-
-    ${
-      current
-        ? `<div class="edit-section">
-            <h3>End current lease</h3>
-            <p>
-              Closes <strong>${escapeHtml(current.tenant)}</strong>'s lease
-              (started ${escapeHtml(current.startDate)}). Readings on the end
-              date belong to the next tenant.
-            </p>
-            <div class="form-row">
-              <div class="form-field">
-                <label for="endDate">End date</label>
-                <input type="date" id="endDate" value="${escapeHtml(localToday())}" />
-              </div>
-              <button type="button" class="btn-danger" id="endLeaseBtn">End lease</button>
-            </div>
-            <div class="edit-msg" id="endLeaseMsg"></div>
-          </div>`
-        : `<div class="edit-section">
-            <p class="muted">No active lease for this room.</p>
-          </div>`
-    }
-
     <div class="edit-section">
-      <h3>Start new lease</h3>
-      <p>
-        ${
-          current
-            ? "Starting a new lease automatically ends the current one on the start date."
-            : "Creates the room's first lease."
-        }
-      </p>
-      <div class="form-row">
-        <div class="form-field">
-          <label for="tenantName">Tenant</label>
-          <input type="text" id="tenantName" placeholder="Tenant name" autocomplete="name" />
+      <div class="edit-head">
+        <div>
+          <h3>History</h3>
+          <p class="edit-hint">Edit start – end dates to backdate or adjust leases. Leave end date blank for the current tenant.</p>
         </div>
-        <div class="form-field">
-          <label for="startDate">Start date</label>
-          <input type="date" id="startDate" value="${escapeHtml(localToday())}" />
-        </div>
-        <button type="button" class="btn-primary" id="startLeaseBtn">Start lease</button>
+        <button type="button" class="btn-add-lease" id="addLeaseBtn" title="Add tenant" aria-label="Add tenant">+</button>
       </div>
-      <div class="edit-msg" id="startLeaseMsg"></div>
-    </div>
-
-    <div class="edit-section">
-      <h3>History</h3>
-      <table class="lease-history">
-        <thead>
-          <tr><th>Tenant</th><th>Start</th><th>End</th></tr>
-        </thead>
-        <tbody>${historyRows}</tbody>
-      </table>
+      ${historyRows}
+      <div class="edit-msg" id="leaseEditMsg"></div>
     </div>
 
     <div class="edit-actions">
@@ -271,15 +300,64 @@ function renderEditPanel(data: UsageResp): void {
     </div>
   `;
 
-  document.getElementById("endLeaseBtn")?.addEventListener("click", () => {
-    void handleEndLease(data.room.id);
+  document.getElementById("addLeaseBtn")?.addEventListener("click", () => {
+    void handleAddLease(data.room.id);
   });
-  document.getElementById("startLeaseBtn")?.addEventListener("click", () => {
-    void handleStartLease(data.room.id);
+
+  panel.querySelectorAll<HTMLInputElement>("input.lease-date-input").forEach((input) => {
+    input.addEventListener("change", () => {
+      void handleLeaseDateChange(data.room.id, input);
+    });
   });
+
+  panel.querySelectorAll<HTMLButtonElement>("button[data-delete-lease]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const leaseId = btn.dataset.deleteLease;
+      if (leaseId) void handleDeleteLease(data.room.id, leaseId);
+    });
+  });
+
   document.getElementById("editDoneBtn")?.addEventListener("click", () => {
     setEditMode(false);
   });
+}
+
+function updateEditPanelInPlace(data: UsageResp): void {
+  const panel = document.getElementById("editPanel");
+  if (!panel || panel.hidden) return;
+  const ratePerKWh = getElectricityRatePerKWh();
+
+  for (const l of data.room.leases) {
+    const kwh = leaseEnergyKWh(data, l.id);
+    const usageEl = panel.querySelector<HTMLElement>(
+      `[data-lease-usage="${CSS.escape(l.id)}"]`,
+    );
+    if (usageEl) {
+      usageEl.innerHTML = `
+        <div class="lease-kwh">${fmtKWh(kwh)} kWh</div>
+        <div class="lease-cost">${fmtMoney(kwh * ratePerKWh)}</div>
+      `;
+    }
+    const curEl = panel.querySelector<HTMLElement>(
+      `[data-lease-current="${CSS.escape(l.id)}"]`,
+    );
+    if (curEl) {
+      curEl.textContent = l.endDate === null ? "current" : "";
+    }
+    const startInput = panel.querySelector<HTMLInputElement>(
+      `input.lease-date-input[data-lease-id="${CSS.escape(l.id)}"][data-field="startDate"]`,
+    );
+    if (startInput && document.activeElement !== startInput && startInput.value !== l.startDate) {
+      startInput.value = l.startDate;
+    }
+    const endInput = panel.querySelector<HTMLInputElement>(
+      `input.lease-date-input[data-lease-id="${CSS.escape(l.id)}"][data-field="endDate"]`,
+    );
+    const wantedEnd = l.endDate ?? "";
+    if (endInput && document.activeElement !== endInput && endInput.value !== wantedEnd) {
+      endInput.value = wantedEnd;
+    }
+  }
 }
 
 function setEditMode(on: boolean): void {
@@ -299,52 +377,142 @@ function setEditMsg(id: string, text: string, ok: boolean): void {
   el.className = `edit-msg ${ok ? "ok" : "error"}`;
 }
 
-async function handleEndLease(roomId: string): Promise<void> {
-  const btn = document.getElementById("endLeaseBtn") as HTMLButtonElement | null;
-  const endDate = (document.getElementById("endDate") as HTMLInputElement | null)?.value;
-  if (!endDate) {
-    setEditMsg("endLeaseMsg", "Pick an end date.", false);
-    return;
-  }
-  if (btn) btn.disabled = true;
-  setEditMsg("endLeaseMsg", "", true);
+async function persistLeases(
+  roomId: string,
+  leases: Lease[],
+  opts: { rebuildPanel: boolean },
+): Promise<void> {
+  setEditMsg("leaseEditMsg", "", true);
   try {
-    await jpost(`/api/rooms/${encodeURIComponent(roomId)}/leases/current/end`, {
-      endDate,
+    await jput(`/api/rooms/${encodeURIComponent(roomId)}/leases`, { leases });
+    await reloadRoom(roomId, {
+      renderChart: true,
+      renderEditPanel: opts.rebuildPanel,
     });
-    await reloadRoom(roomId);
   } catch (err) {
-    setEditMsg("endLeaseMsg", String(err), false);
+    setEditMsg("leaseEditMsg", String(err), false);
+  }
+}
+
+async function handleAddLease(roomId: string): Promise<void> {
+  const btn = document.getElementById("addLeaseBtn") as HTMLButtonElement | null;
+  const leases = (roomData?.room.leases ?? []).map((l) => ({ ...l }));
+  const today = localToday();
+  const newId = `lease-${roomId}-${Date.now()}`;
+
+  if (leases.length === 0) {
+    leases.push({
+      id: newId,
+      tenant: "",
+      startDate: today,
+      endDate: null,
+    });
+  } else {
+    const sorted = [...leases].sort((a, b) => a.startDate.localeCompare(b.startDate));
+    const latest = sorted[sorted.length - 1]!;
+    const earliest = sorted[0]!;
+
+    if (latest.endDate === null && latest.startDate < today) {
+      latest.endDate = today;
+      leases.push({
+        id: newId,
+        tenant: "",
+        startDate: today,
+        endDate: null,
+      });
+    } else if (latest.endDate !== null && latest.endDate <= today) {
+      leases.push({
+        id: newId,
+        tenant: "",
+        startDate: today,
+        endDate: null,
+      });
+    } else {
+      // Latest lease already starts on or after today; add a prior lease row
+      // before the earliest lease so the user can edit/backdate it freely.
+      const priorEnd = earliest.startDate;
+      const priorStart = monthBeforeIso(priorEnd);
+      leases.unshift({
+        id: newId,
+        tenant: "",
+        startDate: priorStart,
+        endDate: priorEnd,
+      });
+    }
+  }
+
+  if (btn) btn.disabled = true;
+  try {
+    await persistLeases(roomId, leases, { rebuildPanel: true });
   } finally {
     if (btn) btn.disabled = false;
   }
 }
 
-async function handleStartLease(roomId: string): Promise<void> {
-  const btn = document.getElementById("startLeaseBtn") as HTMLButtonElement | null;
-  const tenant = (document.getElementById("tenantName") as HTMLInputElement | null)?.value ?? "";
-  const startDate = (document.getElementById("startDate") as HTMLInputElement | null)?.value;
-  if (!tenant.trim()) {
-    setEditMsg("startLeaseMsg", "Enter a tenant name.", false);
-    return;
+async function handleDeleteLease(roomId: string, leaseId: string): Promise<void> {
+  const leases = (roomData?.room.leases ?? []).filter((l) => l.id !== leaseId);
+  await persistLeases(roomId, leases, { rebuildPanel: true });
+}
+
+async function handleLeaseDateChange(
+  roomId: string,
+  input: HTMLInputElement,
+): Promise<void> {
+  const leaseId = input.dataset.leaseId;
+  const field = input.dataset.field as "startDate" | "endDate" | undefined;
+  if (!leaseId || !field || !roomData) return;
+
+  const raw = input.value.trim();
+  const leases = roomData.room.leases.map((l) => ({ ...l }));
+  const target = leases.find((l) => l.id === leaseId);
+  if (!target) return;
+
+  if (field === "startDate") {
+    if (!isPlausibleIsoDate(raw)) return;
+    const oldStart = target.startDate;
+    if (raw === oldStart) return;
+    if (target.endDate !== null && raw >= target.endDate) {
+      setEditMsg("leaseEditMsg", "Start date must be before end date.", false);
+      return;
+    }
+    for (const other of leases) {
+      if (other.id === target.id) continue;
+      if (other.endDate === oldStart && raw > other.startDate) {
+        other.endDate = raw;
+      } else if (
+        other.startDate < raw &&
+        other.endDate !== null &&
+        other.endDate > raw
+      ) {
+        other.endDate = raw;
+      }
+    }
+    target.startDate = raw;
+  } else {
+    const newEnd = raw === "" ? null : raw;
+    if (newEnd !== null && !isPlausibleIsoDate(newEnd)) return;
+    const oldEnd = target.endDate;
+    if (newEnd === oldEnd) return;
+    if (newEnd !== null && newEnd <= target.startDate) {
+      setEditMsg("leaseEditMsg", "End date must be after start date.", false);
+      return;
+    }
+    if (newEnd !== null) {
+      for (const other of leases) {
+        if (other.id === target.id) continue;
+        if (
+          other.startDate >= target.startDate &&
+          other.startDate < newEnd &&
+          (other.endDate === null || newEnd < other.endDate)
+        ) {
+          other.startDate = newEnd;
+        }
+      }
+    }
+    target.endDate = newEnd;
   }
-  if (!startDate) {
-    setEditMsg("startLeaseMsg", "Pick a start date.", false);
-    return;
-  }
-  if (btn) btn.disabled = true;
-  setEditMsg("startLeaseMsg", "", true);
-  try {
-    await jpost(`/api/rooms/${encodeURIComponent(roomId)}/leases`, {
-      tenant: tenant.trim(),
-      startDate,
-    });
-    await reloadRoom(roomId);
-  } catch (err) {
-    setEditMsg("startLeaseMsg", String(err), false);
-  } finally {
-    if (btn) btn.disabled = false;
-  }
+
+  await persistLeases(roomId, leases, { rebuildPanel: false });
 }
 
 async function reloadRoom(
@@ -353,12 +521,15 @@ async function reloadRoom(
 ): Promise<void> {
   const renderChartAfterLoad = opts.renderChart ?? true;
   const renderEditPanelAfterLoad = opts.renderEditPanel ?? true;
-  roomData = await jget<UsageResp>(`/api/rooms/${encodeURIComponent(roomId)}/usage`);
+  roomData = await fetchRoomUsage(roomId);
   renderHeader(roomData);
   renderStats(roomData);
   renderSwitchControls(roomData);
   renderBills(roomData);
-  if (editMode && renderEditPanelAfterLoad) renderEditPanel(roomData);
+  if (editMode) {
+    if (renderEditPanelAfterLoad) renderEditPanel(roomData);
+    else updateEditPanelInPlace(roomData);
+  }
   const leaseStart = roomData.currentLease?.startDate ?? null;
   if (renderChartAfterLoad) {
     await renderChart(roomId, chartRange, leaseStart);
@@ -464,7 +635,7 @@ function renderBills(data: UsageResp): void {
               <div class="bill-main">
                 <div class="bill-month">${escapeHtml(formatMonth(b.month))}</div>
                 <div class="bill-sub">
-                  ${escapeHtml(b.tenant)} · ${escapeHtml(formatBillRange(b.from, b.to))}
+                  ${escapeHtml(formatBillRange(b.from, b.to))}
                 </div>
               </div>
               <div class="bill-usage tabular">
@@ -501,6 +672,17 @@ function renderStats(data: UsageResp): void {
           .join(" · ")
       : "";
 
+  const todayBreakdown =
+    monthIds.length > 1
+      ? monthIds
+          .sort()
+          .map((id) => {
+            const kwh = data.todayUsage.monitors[id] ?? 0;
+            return `<span class="muted">${monitorLabelHtml(data.room, id)}:</span> ${fmtKWh(kwh)}`;
+          })
+          .join(" · ")
+      : "";
+
   const liveIds = latest ? visibleMonitorIds(data.room.monitors) : [];
   const liveBreakdown =
     latest && liveIds.length > 1
@@ -530,13 +712,10 @@ function renderStats(data: UsageResp): void {
       </div>
     </div>
     <div class="card">
-      <div class="label">Lease to date</div>
-      <div class="value tabular">${fmtKWh(data.leaseUsage.energyKWh)}<span class="unit">kWh</span></div>
-      <div class="cost tabular">${fmtMoney(data.leaseUsage.energyKWh * ratePerKWh)}</div>
-      <div class="sub">${[
-        data.currentLease ? `since ${data.currentLease.startDate}` : "no active lease",
-        rateText,
-      ].filter(Boolean).join(" · ")}</div>
+      <div class="label">Used today</div>
+      <div class="value tabular">${fmtKWh(data.todayUsage.energyKWh)}<span class="unit">kWh</span></div>
+      <div class="cost tabular">${fmtMoney(data.todayUsage.energyKWh * ratePerKWh)}</div>
+      <div class="sub">${[rateText, todayBreakdown].filter(Boolean).join(" · ") || "&nbsp;"}</div>
     </div>
   `;
 }
@@ -682,7 +861,7 @@ async function main(): Promise<void> {
 
   let data: UsageResp;
   try {
-    data = await jget<UsageResp>(`/api/rooms/${encodeURIComponent(roomId)}/usage`);
+    data = await fetchRoomUsage(roomId);
   } catch (err) {
     document.getElementById("roomTitle")!.textContent = `Room ${roomId}`;
     showError(

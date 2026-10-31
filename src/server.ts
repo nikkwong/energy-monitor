@@ -9,10 +9,13 @@ import {
   deleteMonitor,
   endCurrentLease,
   ensureRoomAndMonitor,
+  findCurrentLease,
   LeaseError,
+  type LeaseInput,
   MonitorSwitchError,
   readRooms,
   recentReadings,
+  saveRoomLeases,
   setMonitorSwitchDesired,
   startLease,
 } from "./lib/data.ts";
@@ -92,13 +95,17 @@ const server = Bun.serve({
       });
     },
 
-    "/api/rooms": async () => {
+    "/api/rooms": async (req) => {
+      const url = new URL(req.url);
       const cfg = await readRooms();
       const now = new Date();
-      const summaries = await computeAllRoomSummaries(cfg, now);
+      const defaultTodayFrom = new Date(now);
+      defaultTodayFrom.setUTCHours(0, 0, 0, 0);
+      const todayFrom = parseDate(url.searchParams.get("todayFrom"), defaultTodayFrom);
+      const summaries = await computeAllRoomSummaries(cfg, now, todayFrom);
 
       const out = Object.entries(cfg.rooms).map(([id, r]) => {
-        const current = r.leases.find((l) => l.endDate === null) ?? null;
+        const current = findCurrentLease(r.leases, now);
         const s = summaries.get(id)!;
         return {
           id,
@@ -107,6 +114,7 @@ const server = Bun.serve({
           leaseStart: current?.startDate ?? null,
           leaseKWh: s.leaseKWh,
           monthKWh: s.monthKWh,
+          todayKWh: s.todayKWh,
           dayKWh: s.dayKWh,
           weekKWh: s.weekKWh,
           thirtyDayKWh: s.thirtyDayKWh,
@@ -142,19 +150,78 @@ const server = Bun.serve({
       POST: async (req) => {
         const { roomId } = req.params;
         if (!ROOM_ID_RE.test(roomId)) return badRequest("invalid roomId");
-        let body: { tenant?: unknown; startDate?: unknown };
+        let body: { tenant?: unknown; startDate?: unknown; endDate?: unknown };
         try {
           body = (await req.json()) as typeof body;
         } catch {
           return badRequest("expected JSON body");
         }
-        if (typeof body.tenant !== "string" || typeof body.startDate !== "string") {
-          return badRequest("tenant and startDate are required");
+        if (typeof body.startDate !== "string") {
+          return badRequest("startDate is required");
+        }
+        if (body.tenant != null && typeof body.tenant !== "string") {
+          return badRequest("tenant must be a string");
+        }
+        if (body.endDate != null && typeof body.endDate !== "string") {
+          return badRequest("endDate must be a string");
         }
         try {
-          const lease = await startLease(roomId, body.tenant, body.startDate);
+          const lease = await startLease(
+            roomId,
+            typeof body.tenant === "string" ? body.tenant : "",
+            body.startDate,
+            typeof body.endDate === "string" ? body.endDate : null,
+          );
           console.log(`started lease ${lease.id} for room ${roomId}`);
           return Response.json({ ok: true, lease });
+        } catch (err) {
+          if (err instanceof LeaseError) {
+            return Response.json({ error: err.message }, { status: err.status });
+          }
+          throw err;
+        }
+      },
+      PUT: async (req) => {
+        const { roomId } = req.params;
+        if (!ROOM_ID_RE.test(roomId)) return badRequest("invalid roomId");
+        let body: { leases?: unknown };
+        try {
+          body = (await req.json()) as typeof body;
+        } catch {
+          return badRequest("expected JSON body");
+        }
+        if (!Array.isArray(body.leases)) {
+          return badRequest("leases must be an array");
+        }
+        const inputs: LeaseInput[] = [];
+        for (const item of body.leases) {
+          if (!item || typeof item !== "object") {
+            return badRequest("each lease must be an object");
+          }
+          const rec = item as Record<string, unknown>;
+          if (typeof rec.startDate !== "string") {
+            return badRequest("each lease requires startDate");
+          }
+          if (rec.endDate != null && typeof rec.endDate !== "string") {
+            return badRequest("endDate must be a string or null");
+          }
+          if (rec.id != null && typeof rec.id !== "string") {
+            return badRequest("id must be a string");
+          }
+          if (rec.tenant != null && typeof rec.tenant !== "string") {
+            return badRequest("tenant must be a string");
+          }
+          inputs.push({
+            id: typeof rec.id === "string" ? rec.id : undefined,
+            tenant: typeof rec.tenant === "string" ? rec.tenant : undefined,
+            startDate: rec.startDate,
+            endDate: typeof rec.endDate === "string" ? rec.endDate : null,
+          });
+        }
+        try {
+          const leases = await saveRoomLeases(roomId, inputs);
+          console.log(`updated leases (${leases.length}) for room ${roomId}`);
+          return Response.json({ ok: true, leases });
         } catch (err) {
           if (err instanceof LeaseError) {
             return Response.json({ error: err.message }, { status: err.status });
@@ -237,20 +304,29 @@ const server = Bun.serve({
       const cfg = await readRooms();
       const r = cfg.rooms[roomId];
       if (!r) return Response.json({ error: "no such room" }, { status: 404 });
-      const current = r.leases.find((l) => l.endDate === null) ?? null;
+      const now = parseDate(url.searchParams.get("to"), new Date());
+      const current = findCurrentLease(r.leases, now);
       const leaseFrom = current
         ? new Date(current.startDate + "T00:00:00Z")
         : new Date(0);
       const monthFrom = new Date();
       monthFrom.setUTCDate(1);
       monthFrom.setUTCHours(0, 0, 0, 0);
-      const now = parseDate(url.searchParams.get("to"), new Date());
-      const [lease, month, latest, bills] = await Promise.all([
+      const defaultTodayFrom = new Date(now);
+      defaultTodayFrom.setUTCHours(0, 0, 0, 0);
+      const todayFrom = parseDate(url.searchParams.get("todayFrom"), defaultTodayFrom);
+      const [lease, month, today, latest, bills] = await Promise.all([
         computeUsage({ room: roomId, from: leaseFrom, to: now }),
         computeUsage({ room: roomId, from: monthFrom, to: now }),
+        computeUsage({ room: roomId, from: todayFrom, to: now }),
         latestReading(roomId, now),
         computeMonthlyBills({ room: roomId, leases: r.leases, to: now }),
       ]);
+      const leaseTotals: Record<string, number> = {};
+      for (const l of r.leases) leaseTotals[l.id] = 0;
+      for (const b of bills) {
+        leaseTotals[b.leaseId] = (leaseTotals[b.leaseId] ?? 0) + b.energyKWh;
+      }
       const roomOut = sanitizeRoom({ id: roomId, ...r });
       const latestOut = latest
         ? {
@@ -273,6 +349,11 @@ const server = Bun.serve({
           ...month,
           monitors: filterMonitorRecord(month.monitors, roomOut),
         },
+        todayUsage: {
+          ...today,
+          monitors: filterMonitorRecord(today.monitors, roomOut),
+        },
+        leaseTotals,
         latest: latestOut,
         bills,
       });

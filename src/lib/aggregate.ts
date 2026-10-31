@@ -1,4 +1,4 @@
-import { iterDailyRollups, iterReadings, readRooms } from "./data.ts";
+import { findCurrentLease, iterDailyRollups, iterReadings, readRooms } from "./data.ts";
 import { visibleMonitorIds } from "./monitors.ts";
 import type { DailyRollup, Reading, RoomsConfig } from "./types.ts";
 import {
@@ -45,6 +45,7 @@ export type LatestReading = {
 export type RoomSummaryMetrics = {
   leaseKWh: number;
   monthKWh: number;
+  todayKWh: number;
   dayKWh: number;
   weekKWh: number;
   thirtyDayKWh: number;
@@ -160,8 +161,8 @@ function shouldUseRollup(
   return !allow || allow.has(r.monitor);
 }
 
-function leaseStartMs(room: RoomsConfig["rooms"][string]): number {
-  const current = room.leases.find((l) => l.endDate === null);
+function leaseStartMs(room: RoomsConfig["rooms"][string], now = new Date()): number {
+  const current = findCurrentLease(room.leases, now);
   return current
     ? new Date(current.startDate + "T00:00:00Z").getTime()
     : 0;
@@ -201,6 +202,7 @@ function monthLabel(d: Date): string {
 function computeAllRoomSummariesHourly(
   cfg: RoomsConfig,
   now: Date,
+  todayFromMs: number,
 ): Map<string, RoomSummaryMetrics> {
   const nowMs = now.getTime();
   const monthFromMs = monthStartMs(now);
@@ -218,10 +220,11 @@ function computeAllRoomSummariesHourly(
   };
 
   for (const [roomId, room] of Object.entries(cfg.rooms)) {
-    leaseFromMs.set(roomId, leaseStartMs(room));
+    leaseFromMs.set(roomId, leaseStartMs(room, now));
     out.set(roomId, {
       leaseKWh: 0,
       monthKWh: 0,
+      todayKWh: 0,
       dayKWh: 0,
       weekKWh: 0,
       thirtyDayKWh: 0,
@@ -242,6 +245,9 @@ function computeAllRoomSummariesHourly(
     }
     if (row.hourMs + HOUR_MS > monthFromMs) {
       entry.monthKWh += rangedEnergyWh(row, monthFromMs) / 1000;
+    }
+    if (row.hourMs + HOUR_MS > todayFromMs) {
+      entry.todayKWh += rangedEnergyWh(row, todayFromMs) / 1000;
     }
     if (row.hourMs + HOUR_MS > starts.day) {
       entry.dayKWh += rangedEnergyWh(row, starts.day) / 1000;
@@ -275,8 +281,13 @@ function computeAllRoomSummariesHourly(
 export async function computeAllRoomSummaries(
   cfg: RoomsConfig,
   now = new Date(),
+  todayFrom?: Date,
 ): Promise<Map<string, RoomSummaryMetrics>> {
-  if (hourlyStoreReady()) return computeAllRoomSummariesHourly(cfg, now);
+  const defaultTodayFrom = new Date(now);
+  defaultTodayFrom.setUTCHours(0, 0, 0, 0);
+  const todayFromMs = (todayFrom ?? defaultTodayFrom).getTime();
+
+  if (hourlyStoreReady()) return computeAllRoomSummariesHourly(cfg, now, todayFromMs);
 
   const nowMs = now.getTime();
   const livePowerFromMs = nowMs - LIVE_POWER_MAX_AGE_MS;
@@ -287,6 +298,7 @@ export async function computeAllRoomSummaries(
   const leaseFromMs = new Map<string, number>();
   const leaseKWh = new Map<string, number>();
   const monthKWh = new Map<string, number>();
+  const todayKWh = new Map<string, number>();
   const dayKWh = new Map<string, number>();
   const weekKWh = new Map<string, number>();
   const thirtyDayKWh = new Map<string, number>();
@@ -294,9 +306,10 @@ export async function computeAllRoomSummaries(
   const out = new Map<string, RoomSummaryMetrics>();
 
   for (const [roomId, room] of Object.entries(cfg.rooms)) {
-    leaseFromMs.set(roomId, leaseStartMs(room));
+    leaseFromMs.set(roomId, leaseStartMs(room, now));
     leaseKWh.set(roomId, 0);
     monthKWh.set(roomId, 0);
+    todayKWh.set(roomId, 0);
     dayKWh.set(roomId, 0);
     weekKWh.set(roomId, 0);
     thirtyDayKWh.set(roomId, 0);
@@ -304,6 +317,7 @@ export async function computeAllRoomSummaries(
     out.set(roomId, {
       leaseKWh: 0,
       monthKWh: 0,
+      todayKWh: 0,
       dayKWh: 0,
       weekKWh: 0,
       thirtyDayKWh: 0,
@@ -336,6 +350,9 @@ export async function computeAllRoomSummaries(
     }
     if (tsMs >= monthFromMs && tsMs < nowMs) {
       monthKWh.set(row.room, (monthKWh.get(row.room) ?? 0) + row.energyKWh);
+    }
+    if (tsMs >= todayFromMs && tsMs < nowMs) {
+      todayKWh.set(row.room, (todayKWh.get(row.room) ?? 0) + row.energyKWh);
     }
     if (tsMs >= dayFromMs && tsMs < nowMs) {
       dayKWh.set(row.room, (dayKWh.get(row.room) ?? 0) + row.energyKWh);
@@ -379,6 +396,9 @@ export async function computeAllRoomSummaries(
     if (tsMs >= monthFromMs && tsMs < nowMs) {
       monthKWh.set(roomId, (monthKWh.get(roomId) ?? 0) + kwh);
     }
+    if (tsMs >= todayFromMs && tsMs < nowMs) {
+      todayKWh.set(roomId, (todayKWh.get(roomId) ?? 0) + kwh);
+    }
     if (tsMs >= dayFromMs && tsMs < nowMs) {
       dayKWh.set(roomId, (dayKWh.get(roomId) ?? 0) + kwh);
     }
@@ -404,6 +424,7 @@ export async function computeAllRoomSummaries(
   for (const [roomId, entry] of out) {
     entry.leaseKWh = leaseKWh.get(roomId) ?? 0;
     entry.monthKWh = monthKWh.get(roomId) ?? 0;
+    entry.todayKWh = todayKWh.get(roomId) ?? 0;
     entry.dayKWh = dayKWh.get(roomId) ?? 0;
     entry.weekKWh = weekKWh.get(roomId) ?? 0;
     entry.thirtyDayKWh = thirtyDayKWh.get(roomId) ?? 0;
@@ -495,11 +516,24 @@ export async function computeMonthlyBills(opts: {
     status: MonthlyBill["status"];
   }> = [];
 
-  for (const lease of opts.leases) {
+  const sortedLeases = [...opts.leases].sort((a, b) => {
+    const cmp = a.startDate.localeCompare(b.startDate);
+    if (cmp !== 0) return cmp;
+    return (a.endDate ?? "9999-12-31").localeCompare(b.endDate ?? "9999-12-31");
+  });
+
+  for (let i = 0; i < sortedLeases.length; i++) {
+    const lease = sortedLeases[i]!;
     const leaseStart = new Date(lease.startDate + "T00:00:00Z");
-    const leaseEnd = lease.endDate
+    const explicitEnd = lease.endDate
       ? new Date(lease.endDate + "T00:00:00Z")
       : opts.to;
+    const nextLease = sortedLeases[i + 1];
+    const nextStart = nextLease
+      ? new Date(nextLease.startDate + "T00:00:00Z")
+      : null;
+    const leaseEnd =
+      nextStart && nextStart < explicitEnd ? nextStart : explicitEnd;
     const cappedEnd = minDate(leaseEnd, opts.to);
     if (cappedEnd <= leaseStart) continue;
 

@@ -94,6 +94,22 @@ export async function jpost<T>(url: string, body: unknown): Promise<T> {
   return (await r.json()) as T;
 }
 
+export async function jput<T>(url: string, body: unknown): Promise<T> {
+  const r = await fetch(url, {
+    method: "PUT",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    const text = await r.text().catch(() => "");
+    throw new Error(`${r.status} ${r.statusText}: ${text || url}`);
+  }
+  return (await r.json()) as T;
+}
+
 export function startOfMonthLocal(): Date {
   const d = new Date();
   d.setDate(1);

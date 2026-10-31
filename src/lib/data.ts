@@ -241,6 +241,34 @@ async function writeRoomsInQueue(cfg: RoomsConfig): Promise<void> {
   await rename(tmp, ROOMS_PATH);
 }
 
+export function findCurrentLease(
+  leases: Lease[],
+  now = new Date(),
+): Lease | null {
+  const today = now.toISOString().slice(0, 10);
+  for (let i = leases.length - 1; i >= 0; i--) {
+    const l = leases[i]!;
+    if (l.startDate <= today && (l.endDate === null || l.endDate > today)) {
+      return l;
+    }
+  }
+  for (let i = leases.length - 1; i >= 0; i--) {
+    const l = leases[i]!;
+    if (l.endDate === null || l.endDate > today) {
+      return l;
+    }
+  }
+  return null;
+}
+
+function sortLeases(leases: Lease[]): Lease[] {
+  return [...leases].sort((a, b) => {
+    const cmp = a.startDate.localeCompare(b.startDate);
+    if (cmp !== 0) return cmp;
+    return (a.endDate ?? "9999-12-31").localeCompare(b.endDate ?? "9999-12-31");
+  });
+}
+
 /**
  * End the room's current lease (the entry with `endDate === null`).
  * `endDate` is exclusive — readings on that date belong to the next tenant.
@@ -256,7 +284,7 @@ export async function endCurrentLease(
     const room = cfg.rooms[roomId];
     if (!room) throw new LeaseError("no such room", 404);
 
-    const current = room.leases.find((l) => l.endDate === null);
+    const current = findCurrentLease(room.leases);
     if (!current) throw new LeaseError("no active lease", 400);
 
     const end = parseIsoDate(endDate ?? todayUtc());
@@ -266,19 +294,22 @@ export async function endCurrentLease(
     }
 
     current.endDate = end;
+    room.leases = sortLeases(room.leases);
     await writeRoomsInQueue(cfg);
     return current;
   });
 }
 
 /**
- * Append a new active lease. If a lease is currently open, it is closed with
- * `endDate = startDate` of the new one so tenancy windows stay contiguous.
+ * Append a new lease (supports backdating). If an open lease started before
+ * `startDate`, it is closed with `endDate = startDate` so tenancy windows stay
+ * contiguous.
  */
 export async function startLease(
   roomId: string,
   tenant: string,
   startDate: string,
+  endDate: string | null = null,
 ): Promise<Lease> {
   await ensureDataDir();
   return enqueue(async () => {
@@ -288,28 +319,116 @@ export async function startLease(
     if (!room) throw new LeaseError("no such room", 404);
 
     const name = tenant.trim();
-    if (!name) throw new LeaseError("tenant is required", 400);
 
     const start = parseIsoDate(startDate);
     if (!start) throw new LeaseError("invalid startDate", 400);
 
-    const current = room.leases.find((l) => l.endDate === null);
-    if (current) {
-      if (start <= current.startDate) {
-        throw new LeaseError("startDate must be after current lease startDate", 400);
-      }
+    const end =
+      endDate == null || endDate === "" ? null : parseIsoDate(endDate);
+    if (endDate != null && endDate !== "" && !end) {
+      throw new LeaseError("invalid endDate", 400);
+    }
+    if (end && end <= start) {
+      throw new LeaseError("endDate must be after startDate", 400);
+    }
+
+    const current = findCurrentLease(room.leases);
+    if (current && current.endDate === null && start > current.startDate) {
       current.endDate = start;
+    }
+
+    let resolvedEnd = end;
+    if (resolvedEnd === null) {
+      const nextAfter = sortLeases(room.leases).find((l) => l.startDate > start);
+      if (nextAfter) {
+        resolvedEnd = nextAfter.startDate;
+      }
     }
 
     const lease: Lease = {
       id: nextLeaseId(roomId),
       tenant: name,
       startDate: start,
-      endDate: null,
+      endDate: resolvedEnd,
     };
     room.leases.push(lease);
+    room.leases = sortLeases(room.leases);
     await writeRoomsInQueue(cfg);
     return lease;
+  });
+}
+
+export type LeaseInput = {
+  id?: string;
+  tenant?: string;
+  startDate: string;
+  endDate?: string | null;
+  notes?: string;
+};
+
+/**
+ * Replace a room's lease list with the edited set of leases (allowing
+ * backdating, editing start/end dates, adding, and removing leases).
+ */
+export async function saveRoomLeases(
+  roomId: string,
+  inputs: LeaseInput[],
+): Promise<Lease[]> {
+  await ensureDataDir();
+  return enqueue(async () => {
+    const text = await readFile(ROOMS_PATH, "utf8");
+    const cfg = JSON.parse(text) as RoomsConfig;
+    const room = cfg.rooms[roomId];
+    if (!room) throw new LeaseError("no such room", 404);
+
+    const existingById = new Map(room.leases.map((l) => [l.id, l]));
+    const seenIds = new Set<string>();
+    const out: Lease[] = [];
+
+    for (let i = 0; i < inputs.length; i++) {
+      const item = inputs[i]!;
+      const start = parseIsoDate(item.startDate);
+      if (!start) {
+        throw new LeaseError("invalid startDate", 400);
+      }
+
+      const rawEnd = item.endDate;
+      const end =
+        rawEnd == null || rawEnd === "" ? null : parseIsoDate(rawEnd);
+      if (rawEnd != null && rawEnd !== "" && !end) {
+        throw new LeaseError("invalid endDate", 400);
+      }
+      if (end && end <= start) {
+        throw new LeaseError("endDate must be after startDate", 400);
+      }
+
+      const requestedId =
+        typeof item.id === "string" && item.id.trim() ? item.id.trim() : null;
+      const id =
+        requestedId && !seenIds.has(requestedId)
+          ? requestedId
+          : `${nextLeaseId(roomId)}-${i}`;
+      seenIds.add(id);
+
+      const prev = existingById.get(id);
+      const tenant =
+        typeof item.tenant === "string"
+          ? item.tenant.trim()
+          : (prev?.tenant ?? "");
+      const notes = item.notes ?? prev?.notes;
+
+      out.push({
+        id,
+        tenant,
+        startDate: start,
+        endDate: end,
+        ...(notes !== undefined ? { notes } : {}),
+      });
+    }
+
+    room.leases = sortLeases(out);
+    await writeRoomsInQueue(cfg);
+    return room.leases;
   });
 }
 

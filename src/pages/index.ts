@@ -41,6 +41,7 @@ type RoomSummary = {
   leaseStart: string | null;
   leaseKWh: number;
   monthKWh: number;
+  todayKWh: number;
   dayKWh: number;
   weekKWh: number;
   thirtyDayKWh: number;
@@ -77,7 +78,7 @@ function rangeKWh(r: RoomSummary, range: SummaryRange): number {
 
 function renderTotals(rooms: RoomSummary[], ratePerKWh: number, range: SummaryRange): void {
   const rangeTotal = rooms.reduce((s, r) => s + rangeKWh(r, range), 0);
-  const leaseTotal = rooms.reduce((s, r) => s + r.leaseKWh, 0);
+  const todayTotal = rooms.reduce((s, r) => s + r.todayKWh, 0);
   const powerTotal = rooms.reduce((s, r) => s + (r.powerW ?? 0), 0);
   const live = rooms.filter((r) => freshnessClass(r.lastSeen) === "live").length;
   document.getElementById("summaryTitle")!.textContent = rangeLabel(range);
@@ -96,10 +97,10 @@ function renderTotals(rooms: RoomSummary[], ratePerKWh: number, range: SummaryRa
       <div class="sub">${live}/${rooms.length} rooms reporting</div>
     </div>
     <div class="card">
-      <div class="label">Since lease starts</div>
-      <div class="value tabular">${fmtKWh(leaseTotal)}<span class="unit">kWh</span></div>
-      <div class="cost tabular">${fmtMoney(leaseTotal * ratePerKWh)}</div>
-      <div class="sub">summed across active leases</div>
+      <div class="label">Used today</div>
+      <div class="value tabular">${fmtKWh(todayTotal)}<span class="unit">kWh</span></div>
+      <div class="cost tabular">${fmtMoney(todayTotal * ratePerKWh)}</div>
+      <div class="sub">across all rooms</div>
     </div>
   `;
   updateStatsCarousel();
@@ -157,7 +158,11 @@ function renderRooms(rooms: RoomSummary[], ratePerKWh: number, range: SummaryRan
                   aria-label="Delete ${labelAttr}" title="Delete ${labelAttr}">×</button>
           <h3><span class="dot ${cls}"></span>${escapeHtml(r.label)}</h3>
           <div class="tenant">${
-            r.currentTenant ? escapeHtml(r.currentTenant) : "<i>vacant</i>"
+            r.currentTenant
+              ? escapeHtml(r.currentTenant)
+              : r.leaseStart
+                ? `since ${escapeHtml(r.leaseStart)}`
+                : "<i>vacant</i>"
           } · ${fmtRelativeTime(r.lastSeen)}</div>
           <div class="row"><span class="k">${rangeLabel(range)}</span>
             <span class="v tabular">${fmtKWh(kwh)} kWh · ${fmtMoney(kwh * ratePerKWh)}</span></div>
@@ -371,7 +376,11 @@ async function main(): Promise<void> {
   void startOfMonthLocal;
   // Room cards first (one server-side pass), chart loads separately so the
   // page feels responsive even when readings.jsonl is large.
-  const { rooms } = await jget<{ rooms: RoomSummary[] }>("/api/rooms");
+  const todayFrom = new Date();
+  todayFrom.setHours(0, 0, 0, 0);
+  const { rooms } = await jget<{ rooms: RoomSummary[] }>(
+    `/api/rooms?todayFrom=${encodeURIComponent(todayFrom.toISOString())}`,
+  );
   let summaryRange: SummaryRange = "7d";
   let rate = setupRateControl(rooms, () => summaryRange);
   renderTotals(rooms, rate, summaryRange);

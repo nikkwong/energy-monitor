@@ -316,6 +316,151 @@ header.top .crumbs a:hover {
   letter-spacing: 0.05em;
 }
 
+.edit-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.edit-head h3 {
+  margin: 0;
+}
+
+.edit-hint {
+  margin: 4px 0 0 !important;
+  font-size: 12px !important;
+  color: var(--text-dim);
+}
+
+.btn-add-lease {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font: inherit;
+  font-size: 18px;
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.btn-add-lease:hover {
+  border-color: #2c3641;
+  background: var(--bg);
+}
+
+.btn-add-lease:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+
+.lease-list {
+  display: grid;
+  gap: 8px;
+}
+
+.lease-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.lease-dates {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.lease-date-input {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 10px;
+}
+
+.lease-date-input:focus {
+  outline: none;
+  border-color: #2c3641;
+}
+
+.lease-date-sep {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.lease-current-tag {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.lease-row-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: auto;
+}
+
+.lease-usage {
+  text-align: right;
+}
+
+.lease-kwh {
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.lease-cost {
+  margin-top: 2px;
+  color: var(--text-dim);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.lease-delete {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--text-dim);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.lease-delete:hover {
+  color: var(--bad);
+  background: var(--bg-elev-2);
+  border-color: var(--border);
+}
+
+.lease-empty {
+  font-size: 13px;
+  padding: 8px 0 4px;
+}
+
 .bills-section {
   margin-top: 28px;
 }
