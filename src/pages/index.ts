@@ -157,13 +157,7 @@ function renderRooms(rooms: RoomSummary[], ratePerKWh: number, range: SummaryRan
           <button class="card-delete" data-room-id="${idAttr}" data-room-label="${labelAttr}"
                   aria-label="Delete ${labelAttr}" title="Delete ${labelAttr}">×</button>
           <h3><span class="dot ${cls}"></span>${escapeHtml(r.label)}</h3>
-          <div class="tenant">${
-            r.currentTenant
-              ? escapeHtml(r.currentTenant)
-              : r.leaseStart
-                ? `since ${escapeHtml(r.leaseStart)}`
-                : "<i>vacant</i>"
-          } · ${fmtRelativeTime(r.lastSeen)}</div>
+          <div class="tenant">${fmtRelativeTime(r.lastSeen)}</div>
           <div class="row"><span class="k">${rangeLabel(range)}</span>
             <span class="v tabular">${fmtKWh(kwh)} kWh · ${fmtMoney(kwh * ratePerKWh)}</span></div>
           <div class="row"><span class="k">Since lease start</span>
