@@ -12,8 +12,10 @@ import {
 } from "chart.js";
 
 import {
+  buildModalityViewSearch,
   DEFAULT_ELECTRICITY_RATE_PER_KWH,
   DEFAULT_WATER_RATE_PER_GAL,
+  deriveModalityView,
   fmtAxisDollars,
   fmtGal,
   fmtGpm,
@@ -25,6 +27,7 @@ import {
   getElectricityRatePerKWh,
   getWaterRatePerGal,
   jget,
+  type ModalityView,
   saveElectricityRatePerKWh,
   saveWaterRatePerGal,
   setupThemeToggle,
@@ -93,7 +96,6 @@ type TenantConfig = {
 };
 
 type SummaryRange = "month" | "24h" | "7d" | "30d" | "all";
-type ModalityView = "all" | "water" | "power";
 
 type UtilityRates = {
   electricityRatePerKWh: number;
@@ -289,20 +291,25 @@ function attachStatsCarousel(): void {
   window.addEventListener("resize", updateStatsCarousel);
 }
 
-function attachChartLegend(): void {
-  const legendEl = document.getElementById("chartLegend");
-  legendEl?.addEventListener("click", (e) => {
-    const btn = (e.target as HTMLElement)?.closest(
-      "button[data-dataset-index]",
-    ) as HTMLButtonElement | null;
-    if (!btn || !chart) return;
-    const idx = Number(btn.dataset.datasetIndex);
-    if (!Number.isInteger(idx) || !chart.data.datasets[idx]) return;
-    const nextVisible = !chart.isDatasetVisible(idx);
-    chart.setDatasetVisibility(idx, nextVisible);
-    btn.classList.toggle("is-hidden", !nextVisible);
-    chart.update();
+function syncModalityControls(view: ModalityView, bothModalitiesEnabled: boolean): void {
+  const modalityToggle = document.getElementById("modalityToggle");
+  modalityToggle?.querySelectorAll<HTMLButtonElement>("button[data-modality]").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.modality === view);
   });
+
+  const legendEl = document.getElementById("chartLegend");
+  if (!legendEl) return;
+  legendEl.hidden = !bothModalitiesEnabled;
+  legendEl
+    .querySelectorAll<HTMLButtonElement>("button[data-legend-modality]")
+    .forEach((btn) => {
+      const kind = btn.dataset.legendModality;
+      const isSelected = view === kind;
+      const isDimmed = view !== "all" && view !== kind;
+      btn.classList.toggle("active", isSelected);
+      btn.classList.toggle("dimmed", isDimmed);
+      btn.setAttribute("aria-pressed", String(view === "all" || isSelected));
+    });
 }
 
 function renderRooms(
@@ -591,11 +598,7 @@ async function renderChart(
   const canvas = document.getElementById("totalChart") as HTMLCanvasElement;
 
   const isDollarCombined = view === "all";
-  const legendEl = document.getElementById("chartLegend")!;
-  legendEl.hidden = !isDollarCombined;
-  legendEl
-    .querySelectorAll<HTMLButtonElement>(".chart-legend-item")
-    .forEach((btn) => btn.classList.remove("is-hidden"));
+  syncModalityControls(view, bothModalitiesEnabled);
 
   const chartTheme = chartAxisAndTooltipOptions(
     isDollarCombined
@@ -744,11 +747,15 @@ async function main(): Promise<void> {
     return;
   }
 
-  let modalityView: ModalityView = bothEnabled
-    ? "all"
-    : hasPower
-      ? "power"
-      : "water";
+  const currentView = (): ModalityView =>
+    deriveModalityView(window.location.search, tenant.modalities);
+
+  if (bothEnabled) {
+    const initialSearch = buildModalityViewSearch(window.location.search, currentView());
+    if (window.location.search !== initialSearch) {
+      window.history.replaceState(null, "", `${window.location.pathname}${initialSearch}`);
+    }
+  }
 
   let rates: UtilityRates = {
     electricityRatePerKWh: getElectricityRatePerKWh(tenantId),
@@ -756,30 +763,8 @@ async function main(): Promise<void> {
   };
 
   setupThemeToggle(tenantId, () => {
-    void renderChart(summaryRange, modalityView, rates, bothEnabled);
+    void renderChart(summaryRange, currentView(), rates, bothEnabled);
   });
-
-  if (bothEnabled) {
-    const modalityBar = document.getElementById("modalityBar")!;
-    const modalityToggle = document.getElementById("modalityToggle")!;
-    modalityBar.hidden = false;
-    modalityToggle.addEventListener("click", (e) => {
-      const btn = (e.target as HTMLElement)?.closest(
-        "button[data-modality]",
-      ) as HTMLButtonElement | null;
-      if (!btn) return;
-      const next = btn.dataset.modality as ModalityView | undefined;
-      if (!next || next === modalityView) return;
-      modalityToggle
-        .querySelectorAll("button")
-        .forEach((b) => b.classList.remove("active"));
-      btn.classList.add("active");
-      modalityView = next;
-      renderTotals(rooms, rates, summaryRange, modalityView);
-      renderRooms(rooms, rates, summaryRange, modalityView);
-      void renderChart(summaryRange, modalityView, rates, bothEnabled);
-    });
-  }
 
   // Room cards first (one server-side pass), chart loads separately so the
   // page feels responsive even when readings.jsonl is large.
@@ -788,20 +773,68 @@ async function main(): Promise<void> {
     `/api/tenants/${encodeURIComponent(tenantId)}/rooms?todayFrom=${encodeURIComponent(todayFrom)}`,
   );
 
+  const applyViewFromUrl = (): void => {
+    const view = currentView();
+    syncModalityControls(view, bothEnabled);
+    renderTotals(rooms, rates, summaryRange, view);
+    renderRooms(rooms, rates, summaryRange, view);
+    void renderChart(summaryRange, view, rates, bothEnabled);
+  };
+
+  const navigateToView = (next: ModalityView): void => {
+    if (!bothEnabled) return;
+    const nextSearch = buildModalityViewSearch(window.location.search, next);
+    if (window.location.search !== nextSearch) {
+      window.history.pushState(null, "", `${window.location.pathname}${nextSearch}`);
+    }
+    applyViewFromUrl();
+  };
+
+  if (bothEnabled) {
+    const modalityBar = document.getElementById("modalityBar")!;
+    const modalityToggle = document.getElementById("modalityToggle")!;
+    const legendEl = document.getElementById("chartLegend")!;
+    modalityBar.hidden = false;
+    modalityToggle.addEventListener("click", (e) => {
+      const btn = (e.target as HTMLElement)?.closest(
+        "button[data-modality]",
+      ) as HTMLButtonElement | null;
+      if (!btn) return;
+      const next = btn.dataset.modality as ModalityView | undefined;
+      if (!next || next === currentView()) return;
+      navigateToView(next);
+    });
+    legendEl.addEventListener("click", (e) => {
+      const btn = (e.target as HTMLElement)?.closest(
+        "button[data-legend-modality]",
+      ) as HTMLButtonElement | null;
+      if (!btn) return;
+      const kind = btn.dataset.legendModality as "power" | "water" | undefined;
+      if (!kind) return;
+      const next: ModalityView = currentView() === kind ? "all" : kind;
+      navigateToView(next);
+    });
+    window.addEventListener("popstate", () => {
+      applyViewFromUrl();
+    });
+  }
+
   rates = setupRateControls(tenant.modalities, (nextRates) => {
     rates = nextRates;
-    renderTotals(rooms, rates, summaryRange, modalityView);
-    renderRooms(rooms, rates, summaryRange, modalityView);
-    void renderChart(summaryRange, modalityView, rates, bothEnabled);
+    const view = currentView();
+    renderTotals(rooms, rates, summaryRange, view);
+    renderRooms(rooms, rates, summaryRange, view);
+    void renderChart(summaryRange, view, rates, bothEnabled);
   });
 
-  renderTotals(rooms, rates, summaryRange, modalityView);
-  renderRooms(rooms, rates, summaryRange, modalityView);
+  const initialView = currentView();
+  syncModalityControls(initialView, bothEnabled);
+  renderTotals(rooms, rates, summaryRange, initialView);
+  renderRooms(rooms, rates, summaryRange, initialView);
   attachRoomActions();
   attachStatsCarousel();
-  attachChartLegend();
 
-  void renderChart(summaryRange, modalityView, rates, bothEnabled, true).catch((err) => {
+  void renderChart(summaryRange, initialView, rates, bothEnabled, true).catch((err) => {
     console.error("chart failed:", err);
     document.getElementById("totalChart")?.parentElement?.insertAdjacentHTML(
       "afterend",
@@ -820,9 +853,10 @@ async function main(): Promise<void> {
       electricityRatePerKWh: getElectricityRatePerKWh(tenantId),
       waterRatePerGal: getWaterRatePerGal(tenantId),
     };
-    renderTotals(rooms, rates, summaryRange, modalityView);
-    renderRooms(rooms, rates, summaryRange, modalityView);
-    await renderChart(summaryRange, modalityView, rates, bothEnabled, true);
+    const view = currentView();
+    renderTotals(rooms, rates, summaryRange, view);
+    renderRooms(rooms, rates, summaryRange, view);
+    await renderChart(summaryRange, view, rates, bothEnabled, true);
   });
 }
 

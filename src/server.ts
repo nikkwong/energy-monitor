@@ -15,6 +15,8 @@ import {
   MonitorSwitchError,
   readRooms,
   recentReadings,
+  roomHasPowerReadings,
+  roomHasWaterReadings,
   saveRoomLeases,
   setLeaseEmail,
   setMonitorSwitchDesired,
@@ -520,8 +522,22 @@ const server = Bun.serve({
             ),
           }
         : null;
+      const [hasPowerReadings, hasWaterReadings] = await Promise.all([
+        latest !== null ||
+        lease.energyKWh > 0 ||
+        month.energyKWh > 0 ||
+        today.energyKWh > 0 ||
+        bills.some((b) => b.energyKWh > 0)
+          ? Promise.resolve(true)
+          : roomHasPowerReadings(tenantId, roomId),
+        roomHasWaterReadings(tenantId, roomId),
+      ]);
       return Response.json({
         room: roomOut,
+        hasReadings: {
+          power: hasPowerReadings,
+          water: hasWaterReadings,
+        },
         currentLease: current,
         leaseUsage: {
           ...lease,
@@ -616,6 +632,30 @@ const server = Bun.serve({
         ingest(req, req.params.tenantId, req.params.roomId, DEFAULT_MONITOR_ID, "POST"),
       GET: (req) =>
         ingest(req, req.params.tenantId, req.params.roomId, DEFAULT_MONITOR_ID, "GET"),
+    },
+
+    // Legacy pre-tenant Shelly webhook paths: route to defaultTenantId (e.g. 5214)
+    // so deployed devices keep reporting without needing an immediate re-flash.
+    "/api/ingest/:roomId/:monitorId": {
+      POST: async (req) => {
+        const cfg = await loadTenantsConfig();
+        return ingest(req, cfg.defaultTenantId, req.params.roomId, req.params.monitorId, "POST");
+      },
+      GET: async (req) => {
+        const cfg = await loadTenantsConfig();
+        return ingest(req, cfg.defaultTenantId, req.params.roomId, req.params.monitorId, "GET");
+      },
+    },
+
+    "/api/ingest/:roomId": {
+      POST: async (req) => {
+        const cfg = await loadTenantsConfig();
+        return ingest(req, cfg.defaultTenantId, req.params.roomId, DEFAULT_MONITOR_ID, "POST");
+      },
+      GET: async (req) => {
+        const cfg = await loadTenantsConfig();
+        return ingest(req, cfg.defaultTenantId, req.params.roomId, DEFAULT_MONITOR_ID, "GET");
+      },
     },
 
     "/:tenantId/rooms/:roomId/raw": rawReadings,

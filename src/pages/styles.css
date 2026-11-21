@@ -432,6 +432,39 @@ header.top .crumbs a:hover {
   color: var(--text-dim);
 }
 
+.edit-utilities-head {
+  margin-bottom: 0;
+  flex-wrap: wrap;
+}
+
+.utility-toggles {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.utility-toggle-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.utility-toggle-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.utility-seg button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.utility-seg button:disabled:hover {
+  color: var(--text-dim);
+}
+
 .btn-add-lease {
   flex: 0 0 auto;
   width: 30px;
@@ -1181,11 +1214,15 @@ a.card.room:hover .card-delete {
 
 .chart-legend-item:hover {
   color: var(--text);
+  opacity: 0.9;
 }
 
-.chart-legend-item.is-hidden {
+.chart-legend-item.active {
+  font-weight: 600;
+}
+
+.chart-legend-item.dimmed {
   opacity: 0.45;
-  text-decoration: line-through;
 }
 
 .chart-legend-swatch {

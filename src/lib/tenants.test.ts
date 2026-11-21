@@ -1,16 +1,25 @@
-import { rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { emptySeries } from "./aggregate.ts";
 import {
+  appendReading,
   pathsForTenant,
   readRooms,
+  roomHasPowerReadings,
   saveRoomLeases,
   setLeaseEmail,
+  setRoomModalities,
   writeRooms,
 } from "./data.ts";
 import { isValidEmail } from "./email.ts";
 import { normalizeRoomModalities, sanitizeRoom } from "./monitors.ts";
-import { fmtAxisDollars } from "../pages/common.ts";
+import {
+  buildModalityViewSearch,
+  deriveModalityView,
+  fmtAxisDollars,
+} from "../pages/common.ts";
 import {
   getTenant,
   type TenantsConfig,
@@ -83,6 +92,16 @@ describe("tenant registry", () => {
     expect(fmtAxisDollars(0)).toBe("$0");
     expect(fmtAxisDollars(1.5)).toBe("$1.50");
     expect(fmtAxisDollars(25)).toBe("$25");
+
+    const both = { power: true, water: true };
+    expect(deriveModalityView("", both)).toBe("all");
+    expect(deriveModalityView("?view=water", both)).toBe("water");
+    expect(deriveModalityView("?view=power", both)).toBe("power");
+    expect(deriveModalityView("?view=bogus", both)).toBe("all");
+    expect(deriveModalityView("?view=water", { power: true, water: false })).toBe("power");
+    expect(deriveModalityView("?view=power", { power: false, water: true })).toBe("water");
+    expect(buildModalityViewSearch("?foo=1", "power")).toBe("?foo=1&view=power");
+    expect(buildModalityViewSearch("?view=power", "all")).toBe("?view=all");
   });
 
   test("normalizes per-room modalities with true defaults", () => {
@@ -153,6 +172,103 @@ describe("tenant registry", () => {
       expect(reloaded.rooms["301"]?.leases[0]?.email).toBeUndefined();
     } finally {
       await rm(tmpPaths.dataDir, { recursive: true, force: true });
+    }
+  });
+
+  test("prevents turning off a room utility once reading data exists", async () => {
+    const tmpTenant = `__test_room_mod_lock_${process.pid}`;
+    const tmpPaths = pathsForTenant(tmpTenant);
+    try {
+      await writeRooms(tmpTenant, {
+        rooms: {
+          "301": {
+            label: "Room 301",
+            leases: [],
+          },
+        },
+      });
+
+      expect(await roomHasPowerReadings(tmpTenant, "301")).toBe(false);
+      // With no readings, power can be turned off and back on.
+      expect(await setRoomModalities(tmpTenant, "301", { power: false })).toEqual({
+        power: false,
+        water: true,
+      });
+      expect(await setRoomModalities(tmpTenant, "301", { power: true })).toEqual({
+        power: true,
+        water: true,
+      });
+
+      await appendReading(tmpTenant, {
+        ts: "2026-11-21T10:00:00Z",
+        room: "301",
+        monitor: "default",
+        powerW: 110,
+        totalEnergyWh: 5000,
+      });
+      expect(await roomHasPowerReadings(tmpTenant, "301")).toBe(true);
+
+      // Now turning power off is rejected, while water (no readings) can still be toggled.
+      await expect(
+        setRoomModalities(tmpTenant, "301", { power: false }),
+      ).rejects.toThrow("has reading data");
+      expect(await setRoomModalities(tmpTenant, "301", { water: false })).toEqual({
+        power: true,
+        water: false,
+      });
+    } finally {
+      await rm(tmpPaths.dataDir, { recursive: true, force: true });
+    }
+  });
+
+  test("migrate-tenant-layout moves external DATA_DIR layout into tenants/5214", async () => {
+    const tmpDataDir = await mkdtemp(join(tmpdir(), "energy-monitor-data-"));
+    try {
+      await mkdir(join(tmpDataDir, "readings"), { recursive: true });
+      await mkdir(join(tmpDataDir, "tenants", "5214"), { recursive: true });
+      await writeFile(
+        join(tmpDataDir, "rooms.json"),
+        JSON.stringify({ rooms: { "301": { label: "Room 301", leases: [] } } }) + "\n",
+      );
+      // Simulate auto-created empty rooms.json from booting before migration.
+      await writeFile(
+        join(tmpDataDir, "tenants", "5214", "rooms.json"),
+        JSON.stringify({ rooms: {} }) + "\n",
+      );
+      await writeFile(
+        join(tmpDataDir, "readings", "2026-11.jsonl"),
+        '{"ts":"2026-11-01T00:00:00Z","room":"301","monitor":"default","powerW":50,"totalEnergyWh":100}\n',
+      );
+      await writeFile(join(tmpDataDir, "usage.sqlite"), "sqlite-bytes");
+      await writeFile(join(tmpDataDir, "usage.sqlite-wal"), "wal-bytes");
+      await writeFile(join(tmpDataDir, "usage.sqlite-shm"), "shm-bytes");
+
+      const proc = Bun.spawn(
+        ["bun", "run", "scripts/migrate-tenant-layout.ts", "--tenant", "5214", "--apply"],
+        {
+          cwd: process.cwd(),
+          env: { ...process.env, DATA_DIR: tmpDataDir },
+          stdout: "pipe",
+          stderr: "pipe",
+        },
+      );
+      const exitCode = await proc.exited;
+      expect(exitCode).toBe(0);
+
+      const migratedRooms = JSON.parse(
+        await readFile(join(tmpDataDir, "tenants", "5214", "rooms.json"), "utf8"),
+      );
+      expect(migratedRooms.rooms["301"].label).toBe("Room 301");
+      const migratedShard = await readFile(
+        join(tmpDataDir, "tenants", "5214", "readings", "2026-11.jsonl"),
+        "utf8",
+      );
+      expect(migratedShard).toContain('"totalEnergyWh":100');
+      expect(await readFile(join(tmpDataDir, "tenants", "5214", "usage.sqlite"), "utf8")).toBe(
+        "sqlite-bytes",
+      );
+    } finally {
+      await rm(tmpDataDir, { recursive: true, force: true });
     }
   });
 });

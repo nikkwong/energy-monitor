@@ -182,6 +182,29 @@ export function fmtGpm(gpm: number | null | undefined): string {
   return gpm.toFixed(1) + " gpm";
 }
 
+export type ModalityView = "all" | "water" | "power";
+
+export function deriveModalityView(
+  search: string,
+  modalities: { power: boolean; water: boolean },
+): ModalityView {
+  if (modalities.power && !modalities.water) return "power";
+  if (!modalities.power && modalities.water) return "water";
+  const raw = new URLSearchParams(search).get("view");
+  if (raw === "water" || raw === "power" || raw === "all") return raw;
+  return "all";
+}
+
+export function buildModalityViewSearch(
+  currentSearch: string,
+  view: ModalityView,
+): string {
+  const params = new URLSearchParams(currentSearch);
+  params.set("view", view);
+  const qs = params.toString();
+  return qs ? `?${qs}` : "";
+}
+
 export function fmtAxisDollars(v: number): string {
   if (!Number.isFinite(v)) return "";
   if (v === 0) return "$0";

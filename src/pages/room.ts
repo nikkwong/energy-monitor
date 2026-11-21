@@ -79,6 +79,7 @@ type Usage = {
 
 type UsageResp = {
   room: Room;
+  hasReadings?: UtilityModalities;
   currentLease: Lease | null;
   leaseUsage: Usage;
   monthUsage: Usage;
@@ -257,12 +258,10 @@ function renderEditPanel(data: UsageResp): void {
   const ratePerKWh = getElectricityRatePerKWh(tenantId);
   const history = [...data.room.leases].reverse();
   const roomMod = normalizeRoomModalities(data.room.modalities);
-  const powerSub = `${roomMod.power ? "Enabled" : "Disabled"} for this room${
-    !tenantModalities.power ? " · disabled for tenant" : ""
-  }`;
-  const waterSub = `${roomMod.water ? "Enabled" : "Disabled"} for this room${
-    !tenantModalities.water ? " · disabled for tenant" : ""
-  }`;
+  const hasPowerData = Boolean(data.hasReadings?.power);
+  const hasWaterData = Boolean(data.hasReadings?.water);
+  const powerOffLocked = roomMod.power && hasPowerData;
+  const waterOffLocked = roomMod.water && hasWaterData;
 
   const historyRows = history.length
     ? `<div class="lease-list">
@@ -335,30 +334,42 @@ function renderEditPanel(data: UsageResp): void {
     : `<div class="lease-empty muted">No lease history yet. Click + to add a tenant.</div>`;
 
   panel.innerHTML = `
-    <h2>Edit room</h2>
-
     <div class="edit-section">
-      <h3>Utilities</h3>
-      <p>Configure whether power and water monitoring are on or off for this room.</p>
-      <div class="switch-control-list">
-        <div class="switch-control-row">
-          <div>
-            <div class="switch-control-name"><span class="inline-utility">${utilityIconHtml("power")}Power</span></div>
-            <div class="switch-control-sub">${escapeHtml(powerSub)}</div>
-          </div>
-          <div class="switch-buttons">
-            <button type="button" class="${roomMod.power ? "active" : ""}" data-room-modality="power" data-enabled="true">On</button>
-            <button type="button" class="${!roomMod.power ? "active" : ""}" data-room-modality="power" data-enabled="false">Off</button>
-          </div>
+      <div class="edit-head edit-utilities-head">
+        <div>
+          <h3>Utilities</h3>
+          ${
+            powerOffLocked || waterOffLocked
+              ? `<p class="edit-hint">Utilities with recorded readings cannot be turned off.</p>`
+              : ""
+          }
         </div>
-        <div class="switch-control-row">
-          <div>
-            <div class="switch-control-name"><span class="inline-utility">${utilityIconHtml("water")}Water</span></div>
-            <div class="switch-control-sub">${escapeHtml(waterSub)}</div>
+        <div class="utility-toggles" role="group" aria-label="Room utilities">
+          <div class="utility-toggle-item">
+            <span class="utility-toggle-label"><span class="inline-utility">${utilityIconHtml("power")}Power</span></span>
+            <div class="range-toggle utility-seg">
+              <button type="button" class="${roomMod.power ? "active" : ""}" data-room-modality="power" data-enabled="true">On</button>
+              <button
+                type="button"
+                class="${!roomMod.power ? "active" : ""}"
+                data-room-modality="power"
+                data-enabled="false"
+                ${powerOffLocked ? 'disabled title="Cannot turn off — room has power reading data"' : ""}
+              >Off</button>
+            </div>
           </div>
-          <div class="switch-buttons">
-            <button type="button" class="${roomMod.water ? "active" : ""}" data-room-modality="water" data-enabled="true">On</button>
-            <button type="button" class="${!roomMod.water ? "active" : ""}" data-room-modality="water" data-enabled="false">Off</button>
+          <div class="utility-toggle-item">
+            <span class="utility-toggle-label"><span class="inline-utility">${utilityIconHtml("water")}Water</span></span>
+            <div class="range-toggle utility-seg">
+              <button type="button" class="${roomMod.water ? "active" : ""}" data-room-modality="water" data-enabled="true">On</button>
+              <button
+                type="button"
+                class="${!roomMod.water ? "active" : ""}"
+                data-room-modality="water"
+                data-enabled="false"
+                ${waterOffLocked ? 'disabled title="Cannot turn off — room has water reading data"' : ""}
+              >Off</button>
+            </div>
           </div>
         </div>
       </div>
@@ -438,6 +449,21 @@ function updateEditPanelInPlace(data: UsageResp): void {
   const panel = document.getElementById("editPanel");
   if (!panel || panel.hidden) return;
   const ratePerKWh = getElectricityRatePerKWh(tenantId);
+  const roomMod = normalizeRoomModalities(data.room.modalities);
+  const powerOffBtn = panel.querySelector<HTMLButtonElement>(
+    'button[data-room-modality="power"][data-enabled="false"]',
+  );
+  if (powerOffBtn && roomMod.power && data.hasReadings?.power) {
+    powerOffBtn.disabled = true;
+    powerOffBtn.title = "Cannot turn off — room has power reading data";
+  }
+  const waterOffBtn = panel.querySelector<HTMLButtonElement>(
+    'button[data-room-modality="water"][data-enabled="false"]',
+  );
+  if (waterOffBtn && roomMod.water && data.hasReadings?.water) {
+    waterOffBtn.disabled = true;
+    waterOffBtn.title = "Cannot turn off — room has water reading data";
+  }
 
   for (const l of data.room.leases) {
     const kwh = leaseEnergyKWh(data, l.id);

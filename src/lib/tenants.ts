@@ -22,6 +22,7 @@ export type TenantsConfig = {
 
 export const DATA_DIR = resolve(process.env.DATA_DIR ?? resolve(process.cwd(), "data"));
 export const TENANTS_PATH = resolve(DATA_DIR, "tenants.json");
+const REPO_TENANTS_PATH = resolve(process.cwd(), "data", "tenants.json");
 
 let cachedConfig: TenantsConfig | null = null;
 
@@ -75,13 +76,27 @@ export function validateTenantsConfig(value: unknown): TenantsConfig {
 
 export async function loadTenantsConfig(): Promise<TenantsConfig> {
   if (cachedConfig) return cachedConfig;
+  let loadedPath = TENANTS_PATH;
   try {
-    const text = await readFile(TENANTS_PATH, "utf8");
+    let text: string;
+    try {
+      text = await readFile(TENANTS_PATH, "utf8");
+    } catch (err) {
+      if (
+        (err as NodeJS.ErrnoException).code === "ENOENT" &&
+        TENANTS_PATH !== REPO_TENANTS_PATH
+      ) {
+        loadedPath = REPO_TENANTS_PATH;
+        text = await readFile(REPO_TENANTS_PATH, "utf8");
+      } else {
+        throw err;
+      }
+    }
     cachedConfig = validateTenantsConfig(JSON.parse(text));
     return cachedConfig;
   } catch (err) {
     throw new Error(
-      `failed to load tenant registry at ${TENANTS_PATH}: ${
+      `failed to load tenant registry at ${loadedPath}: ${
         err instanceof Error ? err.message : String(err)
       }`,
       { cause: err },

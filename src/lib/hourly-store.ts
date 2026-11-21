@@ -237,6 +237,21 @@ export class HourlyStore {
       .all();
   }
 
+  hasRoomData(room: string): boolean {
+    const latestRow = this.db
+      .query<{ one: number }, [string]>(
+        "SELECT 1 AS one FROM latest_readings WHERE room = ? LIMIT 1",
+      )
+      .get(room);
+    if (latestRow) return true;
+    const usageRow = this.db
+      .query<{ one: number }, [string]>(
+        "SELECT 1 AS one FROM hourly_usage WHERE room = ? LIMIT 1",
+      )
+      .get(room);
+    return Boolean(usageRow);
+  }
+
   close(): void {
     this.db.close();
   }

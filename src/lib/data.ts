@@ -527,6 +527,28 @@ export async function setLeaseEmail(
   });
 }
 
+export async function roomHasPowerReadings(
+  tenantId: string,
+  roomId: string,
+): Promise<boolean> {
+  if (hourlyStoreReady(tenantId)) {
+    return hourlyStore(tenantId).hasRoomData(roomId);
+  }
+  const recent = await recentReadings(tenantId, roomId, 1);
+  if (recent.length > 0) return true;
+  for await (const row of iterDailyRollups(tenantId)) {
+    if (row.room === roomId) return true;
+  }
+  return false;
+}
+
+export async function roomHasWaterReadings(
+  _tenantId: string,
+  _roomId: string,
+): Promise<boolean> {
+  return false;
+}
+
 export async function setRoomModalities(
   tenantId: string,
   roomId: string,
@@ -547,6 +569,19 @@ export async function setRoomModalities(
     const cfg = JSON.parse(text) as RoomsConfig;
     const room = cfg.rooms[roomId];
     if (!room) throw new LeaseError("no such room", 404);
+
+    if (patch.power === false && (await roomHasPowerReadings(tenantId, roomId))) {
+      throw new LeaseError(
+        "cannot turn off power monitoring because this room has reading data",
+        400,
+      );
+    }
+    if (patch.water === false && (await roomHasWaterReadings(tenantId, roomId))) {
+      throw new LeaseError(
+        "cannot turn off water monitoring because this room has reading data",
+        400,
+      );
+    }
 
     const prev = normalizeRoomModalities(room.modalities);
     const next: UtilityModalities = {
