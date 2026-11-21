@@ -16,10 +16,18 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { readRooms, writeRooms } from "../src/lib/data.ts";
 import { visibleMonitorIds } from "../src/lib/monitors.ts";
+import { requireTenant } from "../src/lib/tenants.ts";
 
 const MOCK_CONFIG = resolve(process.cwd(), "data/mock-rooms.json");
 const args = new Set(process.argv.slice(2));
 const dropMockRooms = args.has("--mock-rooms");
+const tenantArgIndex = process.argv.indexOf("--tenant");
+const tenantId = tenantArgIndex === -1 ? null : (process.argv[tenantArgIndex + 1] ?? null);
+if (!tenantId) {
+  console.error("usage: bun run prune --tenant TENANT_ID [--mock-rooms]");
+  process.exit(1);
+}
+await requireTenant(tenantId);
 
 async function mockRoomIds(): Promise<Set<string>> {
   try {
@@ -50,7 +58,7 @@ function roomLooksMockOnly(
   return ids.every(isMockMonitor);
 }
 
-const cfg = await readRooms();
+const cfg = await readRooms(tenantId);
 const mockIds = dropMockRooms ? await mockRoomIds() : new Set<string>();
 let changed = false;
 
@@ -91,8 +99,8 @@ if (!changed) {
   console.log(
     "different data/ dir (e.g. /var/lib/5214). Run prune there, or check:",
   );
-  console.log("  curl -s http://<host>:3000/api/config/rooms | jq");
+  console.log(`  curl -s http://<host>:3000/api/tenants/${tenantId}/config/rooms | jq`);
 } else {
-  await writeRooms(cfg);
-  console.log("\nwrote data/rooms.json");
+  await writeRooms(tenantId, cfg);
+  console.log(`\nwrote data/tenants/${tenantId}/rooms.json`);
 }

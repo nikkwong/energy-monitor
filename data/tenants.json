@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "defaultTenantId": "5214",
+  "tenants": [
+    {
+      "tenantId": "5214",
+      "label": "5214",
+      "modalities": {
+        "power": true,
+        "water": true
+      }
+    }
+  ]
+}

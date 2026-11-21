@@ -16,5 +16,12 @@ data/rollups/
 data/archive/
 data/usage.sqlite*
 data/*.tmp
+data/tenants/*/readings.jsonl
+data/tenants/*/readings.jsonl.migrated-*
+data/tenants/*/readings/
+data/tenants/*/rollups/
+data/tenants/*/archive/
+data/tenants/*/usage.sqlite*
+data/tenants/*/*.tmp
 
 .DS_Store

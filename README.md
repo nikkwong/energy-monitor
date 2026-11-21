@@ -1,15 +1,16 @@
-# 5214
+# Energy Monitor
 
-Per-room power-consumption dashboard for the house at 5214, fed by Shelly EM
-Mini Gen4 devices (one per room). Shows each tenant how much power they've
-used this month and over their full lease.
+Tenant-scoped utility dashboards. Each configured tenant has isolated rooms,
+leases, monitors, telemetry, and a dashboard under its own URL slug. Power
+monitoring is provided by Shelly EM Mini Gen4 devices; water is reserved in
+the tenant configuration but is not rendered or ingested yet.
 
 ## Stack
 
 - **Runtime / bundler**: [Bun](https://bun.sh) 1.3+ (native HTML routing + bundling)
 - **Server**: `Bun.serve` with typed routes and dynamic params
 - **Client**: vanilla TypeScript + [Chart.js](https://www.chartjs.org), bundled by Bun
-- **Storage**: two flat files in `data/` — see [Data model](#data-model)
+- **Storage**: tenant-partitioned flat files under `data/tenants/`
 
 ## Quick start
 
@@ -27,7 +28,27 @@ PORT=3000 bun run start
 
 ## Configuration
 
-- `PORT` — HTTP port, defaults to `3000`.
+- `PORT` — HTTP port, defaults to `3000`
+- `DATA_DIR` — persistent data root, defaults to `./data`
+
+`data/tenants.json` is the tenant registry:
+
+```json
+{
+  "schemaVersion": 1,
+  "defaultTenantId": "5214",
+  "tenants": [
+    {
+      "tenantId": "5214",
+      "label": "5214",
+      "modalities": { "power": true, "water": false }
+    }
+  ]
+}
+```
+
+Tenant IDs must be unique safe path segments. A slug partitions data but is
+not authentication; dashboards remain public until an auth layer is added.
 
 The homepage has a browser-local electricity-rate setting saved in
 `localStorage`. It defaults to Seattle City Light's current Seattle residential
@@ -38,17 +59,18 @@ charges.
 
 ### Pages
 
-- `GET /` — overview of every room with totals + house-level chart
-- `GET /:roomId` — single-room dashboard (e.g. `/301`, `/b4`)
+- `GET /` — redirect to the configured default tenant
+- `GET /:tenantId` — tenant overview
+- `GET /:tenantId/rooms/:roomId` — tenant room dashboard
 
 ### JSON API
 
-- `GET /api/rooms` — every room with month-to-date kWh, lease-to-date kWh, current power, last-seen
-- `GET /api/rooms/:roomId/usage` — same plus per-channel breakdown for one room
-- `GET /api/rooms/:roomId/series?from=&to=&bucket=hour|day|month` — time series for one room
-- `GET /api/series?from=&to=&bucket=…` — house-total time series
-- `POST /api/ingest/:roomId` — Shelly webhook target (NotifyStatus / RPC payloads)
-- `GET /api/ingest/:roomId?total_act_energy=…&act_power=…&channel=…` — legacy "Action URL" target
+- `GET /api/tenants/:tenantId/config` — public label and modalities
+- `GET /api/tenants/:tenantId/rooms` — tenant room summaries
+- `GET /api/tenants/:tenantId/rooms/:roomId/usage` — room usage
+- `GET /api/tenants/:tenantId/rooms/:roomId/series?from=&to=&bucket=...`
+- `GET /api/tenants/:tenantId/series?from=&to=&bucket=...` — tenant total
+- `POST /api/tenants/:tenantId/ingest/:roomId/:monitorId` — Shelly webhook
 - `GET /api/health`
 
 `from`/`to` accept any ISO-8601 timestamp. Defaults: last 30 days, day buckets.
@@ -57,7 +79,8 @@ charges.
 
 See [`shelly/README.md`](./shelly/README.md) for the device-side setup.
 TL;DR: paste [`shelly/report.js`](./shelly/report.js) into the device's
-**Scripts** tab, edit `ROOM_ID` + `BASE_URL`, click Run + Start on boot.
+**Scripts** tab, edit `TENANT_ID`, `ROOM_ID`, `MONITOR_ID`, and `BASE_URL`,
+then click Run + Start on boot.
 
 The server's ingest endpoint is forgiving: as long as the body has any of
 `em1:N` / `em1data:N` / `em:N` keys (or the legacy querystring params), it
@@ -65,7 +88,7 @@ stores a reading. Anything unrecognized is preserved in `raw` for debugging.
 
 ## Data model
 
-### `data/rooms.json` (read-modify-write, rare)
+### `data/tenants/:tenantId/rooms.json` (read-modify-write, rare)
 
 Identity and lease history. Edit by hand or via a future admin endpoint.
 
@@ -91,7 +114,7 @@ Identity and lease history. Edit by hand or via a future admin endpoint.
 The current tenant is the lease with `endDate: null`. To rotate tenants, set
 `endDate` on the existing lease and append a new one.
 
-### `data/readings/YYYY-MM.jsonl` (append-only telemetry)
+### `data/tenants/:tenantId/readings/YYYY-MM.jsonl` (append-only telemetry)
 
 One JSON object per line, sharded by UTC month. Created on first webhook for
 that month. Never edited in-place.
@@ -105,19 +128,19 @@ it for compatibility. Migrate it once so requests no longer have to scan one
 large file:
 
 ```bash
-bun run migrate:readings          # dry run
-bun run migrate:readings --apply  # write shards, move readings.jsonl aside
+bun run migrate:readings --tenant 5214
+bun run migrate:readings --tenant 5214 --apply
 ```
 
-### `data/rollups/daily.jsonl` (old-data summaries)
+### `data/tenants/:tenantId/rollups/daily.jsonl` (old-data summaries)
 
 For raw shards older than your retention window, roll them up to daily kWh and
 gzip the raw shard:
 
 ```bash
 # Archive shards older than July 2025 (dry run first)
-bun run rollup --before 2025-07
-bun run rollup --before 2025-07 --apply
+bun run rollup --tenant 5214 --before 2025-07
+bun run rollup --tenant 5214 --before 2025-07 --apply
 ```
 
 This writes daily rows like:
@@ -126,10 +149,11 @@ This writes daily rows like:
 {"date":"2025-06-01","room":"301","monitor":"south","energyKWh":4.21}
 ```
 
-Archived raw shards land in `data/archive/readings/*.jsonl.gz`. The dashboard
-can rebuild its SQLite query index from daily rollups plus retained raw shards.
+Archived raw shards land in
+`data/tenants/:tenantId/archive/readings/*.jsonl.gz`. The dashboard can rebuild
+its SQLite query index from daily rollups plus retained raw shards.
 
-### `data/usage.sqlite` (fast query index)
+### `data/tenants/:tenantId/usage.sqlite` (fast query index)
 
 Dashboard requests use a compact SQLite index containing one consumed-energy
 total per room, monitor, and UTC hour, plus each monitor's latest reading.
@@ -139,32 +163,28 @@ parsed when the app opens.
 Build the index once after upgrading:
 
 ```bash
-bun run rebuild:index          # prints instructions; changes nothing
+bun run rebuild:index --tenant 5214          # prints instructions; changes nothing
 # Stop the dashboard service before the next command.
-bun run rebuild:index --apply
+bun run rebuild:index --tenant 5214 --apply
 ```
 
 If telemetry lives outside the checkout, set its absolute path explicitly for
 both the server and maintenance commands:
 
 ```bash
-DATA_DIR=/home/nikk/energy-monitor-data bun run rebuild:index --apply
+DATA_DIR=/home/nikk/energy-monitor-data bun run rebuild:index --tenant 5214 --apply
 ```
 
-For this deployment, `bun run start` already uses
-`/home/nikk/energy-monitor-data`; `DATA_DIR` can still override it when running
-the server directly. Maintenance commands require an explicit `DATA_DIR`.
-The rebuild prints the selected directory and refuses to activate an index
-with fewer than 100 source rows unless `--allow-small` is supplied.
+### Migrating a pre-tenant deployment
 
-The rebuild imports daily rollups and retained raw readings, then atomically
-replaces `data/usage.sqlite`. If the index is absent or incomplete, the app
-continues using the slower JSONL reader instead of returning empty totals.
+Preview and then move the legacy top-level data into one tenant partition:
 
-Hourly rows store positive deltas from the Shelly's cumulative
-`totalEnergyWh` counter—not voltage and not sampled power. Day, month, and
-midnight lease boundaries remain exact. Ranges beginning partway through an
-hour estimate the overlapping fraction of that first hour.
+```bash
+bun run migrate:tenant-layout --tenant 5214
+bun run migrate:tenant-layout --tenant 5214 --apply
+```
+
+The migration refuses to overwrite an existing non-identical target.
 
 ### Why keep JSONL and SQLite?
 
@@ -192,16 +212,18 @@ src/
   pages/
     index.html        # Overview
     index.ts
-    room.html         # /:roomId dashboard
+    room.html         # /:tenantId/rooms/:roomId dashboard
     room.ts
     common.ts
     styles.css
 data/
-  rooms.json          # leases (in git)
-  readings/           # monthly raw telemetry shards (gitignored)
-  rollups/            # daily old-data summaries (gitignored)
-  archive/readings/   # gzipped old raw shards (gitignored)
-  usage.sqlite        # rebuildable hourly query index (gitignored)
+  tenants.json
+  tenants/5214/
+    rooms.json
+    readings/
+    rollups/
+    archive/readings/
+    usage.sqlite        # rebuildable hourly query index (gitignored)
 ```
 
 ## Deployment notes

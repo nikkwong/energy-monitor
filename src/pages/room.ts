@@ -10,6 +10,7 @@ import {
 } from "chart.js";
 
 import {
+  chartAxisAndTooltipOptions,
   fmtKWh,
   fmtMoney,
   fmtW,
@@ -19,11 +20,18 @@ import {
   jget,
   jpost,
   jput,
+  setupThemeToggle,
+  startOfTodayLocal,
+  themeCssVar,
 } from "./common.ts";
+import { isValidEmail, normalizeEmail } from "../lib/email.ts";
 import {
   displayMonitorLabel,
+  normalizeRoomModalities,
   visibleMonitorIds,
 } from "../lib/monitors.ts";
+import type { UtilityModalities } from "../lib/types.ts";
+import { hydrateUtilityIcons, utilityIconHtml } from "./icons.ts";
 
 Chart.register(
   LineController,
@@ -38,6 +46,7 @@ Chart.register(
 type Lease = {
   id: string;
   tenant: string;
+  email?: string;
   startDate: string;
   endDate: string | null;
   notes?: string;
@@ -56,6 +65,7 @@ type Monitor = {
 type Room = {
   id: string;
   label: string;
+  modalities?: UtilityModalities;
   monitors?: Record<string, Monitor>;
   leases: Lease[];
 };
@@ -101,6 +111,8 @@ let chart: Chart | null = null;
 let editMode = false;
 let roomData: UsageResp | null = null;
 let chartRange: RangeKey = "month";
+let tenantLabel = "Dashboard";
+let tenantModalities: UtilityModalities = { power: true, water: false };
 // Reporters post every 60 seconds. Allow several missed/jittered intervals
 // before showing the unavailable warning.
 const DEVICE_STALE_MS = 5 * 60 * 1000;
@@ -114,22 +126,31 @@ function localToday(): string {
   return `${y}-${m}-${day}`;
 }
 
-function startOfTodayLocal(): Date {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  return d;
+function routeIds(): { tenantId: string; roomId: string; edit: boolean } | null {
+  const parts = window.location.pathname.split("/").filter(Boolean).map(decodeURIComponent);
+  if ((parts.length !== 3 && parts.length !== 4) || parts[1] !== "rooms") return null;
+  if (parts.length === 4 && parts[3] !== "edit") return null;
+  const tenantId = parts[0];
+  const roomId = parts[2];
+  return tenantId && roomId ? { tenantId, roomId, edit: parts.length === 4 } : null;
 }
+
+const route = routeIds();
+const tenantId = route?.tenantId ?? "";
 
 function fetchRoomUsage(roomId: string): Promise<UsageResp> {
   const todayFrom = startOfTodayLocal().toISOString();
   return jget<UsageResp>(
-    `/api/rooms/${encodeURIComponent(roomId)}/usage?todayFrom=${encodeURIComponent(todayFrom)}`,
+    `/api/tenants/${encodeURIComponent(tenantId)}/rooms/${encodeURIComponent(roomId)}/usage?todayFrom=${encodeURIComponent(todayFrom)}`,
   );
 }
 
-function getRoomId(): string {
-  const path = window.location.pathname.replace(/^\/+|\/+$/g, "");
-  return decodeURIComponent(path);
+function roomPowerActive(data: UsageResp): boolean {
+  return tenantModalities.power && normalizeRoomModalities(data.room.modalities).power;
+}
+
+function roomWaterActive(data: UsageResp): boolean {
+  return tenantModalities.water && normalizeRoomModalities(data.room.modalities).water;
 }
 
 function escapeHtml(s: string): string {
@@ -156,10 +177,12 @@ function showError(msg: string): void {
 
 function renderHeader(data: UsageResp): void {
   document.getElementById("roomTitle")!.textContent = data.room.label;
-  document.title = `5214 · ${data.room.label}`;
-  const rawLink = document.getElementById("rawDataLink") as HTMLAnchorElement;
-  rawLink.href = `/${encodeURIComponent(data.room.id)}/raw`;
-  rawLink.hidden = false;
+  document.title = `${tenantLabel} · ${data.room.label}`;
+  const rawLink = document.getElementById("rawDataLink") as HTMLAnchorElement | null;
+  if (rawLink) {
+    rawLink.href = `/${encodeURIComponent(tenantId)}/rooms/${encodeURIComponent(data.room.id)}/raw`;
+    rawLink.hidden = !roomPowerActive(data);
+  }
 
   const lease = data.currentLease;
   const leaseLine = lease
@@ -168,16 +191,18 @@ function renderHeader(data: UsageResp): void {
 
   // Each monitor with a known IP becomes a clickable link to its admin UI.
   const monitors = data.room.monitors ?? {};
-  const devicePieces = visibleMonitorIds(monitors)
-    .sort()
-    .map((id) => {
-      const m = monitors[id]!;
-      const label = escapeHtml(displayMonitorLabel(m, id));
-      const alert = deviceStaleMarker(data.latest?.monitors[id]?.ts);
-      if (!m.ip) return `${label}${alert}`;
-      const ip = escapeHtml(m.ip);
-      return `<a href="http://${ip}" target="_blank" rel="noopener" title="Shelly admin · ${ip}">${label}</a>${alert}`;
-    });
+  const devicePieces = roomPowerActive(data)
+    ? visibleMonitorIds(monitors)
+        .sort()
+        .map((id) => {
+          const m = monitors[id]!;
+          const label = escapeHtml(displayMonitorLabel(m, id));
+          const alert = deviceStaleMarker(data.latest?.monitors[id]?.ts);
+          if (!m.ip) return `${label}${alert}`;
+          const ip = escapeHtml(m.ip);
+          return `<a href="http://${ip}" target="_blank" rel="noopener" title="Shelly admin · ${ip}">${label}</a>${alert}`;
+        })
+    : [];
   const devicesLine = devicePieces.length
     ? `<span class="muted">devices:</span> ${devicePieces.join(" · ")}`
     : "";
@@ -229,8 +254,15 @@ function monthBeforeIso(isoDate: string): string {
 
 function renderEditPanel(data: UsageResp): void {
   const panel = document.getElementById("editPanel")!;
-  const ratePerKWh = getElectricityRatePerKWh();
+  const ratePerKWh = getElectricityRatePerKWh(tenantId);
   const history = [...data.room.leases].reverse();
+  const roomMod = normalizeRoomModalities(data.room.modalities);
+  const powerSub = `${roomMod.power ? "Enabled" : "Disabled"} for this room${
+    !tenantModalities.power ? " · disabled for tenant" : ""
+  }`;
+  const waterSub = `${roomMod.water ? "Enabled" : "Disabled"} for this room${
+    !tenantModalities.water ? " · disabled for tenant" : ""
+  }`;
 
   const historyRows = history.length
     ? `<div class="lease-list">
@@ -238,29 +270,49 @@ function renderEditPanel(data: UsageResp): void {
           .map((l) => {
             const kwh = leaseEnergyKWh(data, l.id);
             const idAttr = escapeHtml(l.id);
+            const periodDesc = `${l.startDate} to ${l.endDate ?? "present"}`;
             return `
               <div class="lease-row" data-lease-row="${idAttr}">
-                <div class="lease-dates">
-                  <input
-                    type="date"
-                    class="lease-date-input tabular"
-                    data-lease-id="${idAttr}"
-                    data-field="startDate"
-                    value="${escapeHtml(l.startDate)}"
-                    aria-label="Lease start date"
-                  />
-                  <span class="lease-date-sep">–</span>
-                  <input
-                    type="date"
-                    class="lease-date-input tabular"
-                    data-lease-id="${idAttr}"
-                    data-field="endDate"
-                    value="${escapeHtml(l.endDate ?? "")}"
-                    aria-label="Lease end date"
-                  />
-                  <span class="lease-current-tag" data-lease-current="${idAttr}">${
-                    l.endDate === null ? "current" : ""
-                  }</span>
+                <div class="lease-main">
+                  <div class="lease-dates">
+                    <input
+                      type="date"
+                      class="lease-date-input tabular"
+                      data-lease-id="${idAttr}"
+                      data-field="startDate"
+                      value="${escapeHtml(l.startDate)}"
+                      aria-label="Lease start date"
+                    />
+                    <span class="lease-date-sep">–</span>
+                    <input
+                      type="date"
+                      class="lease-date-input tabular"
+                      data-lease-id="${idAttr}"
+                      data-field="endDate"
+                      value="${escapeHtml(l.endDate ?? "")}"
+                      aria-label="Lease end date"
+                    />
+                    <span class="lease-current-tag" data-lease-current="${idAttr}">${
+                      l.endDate === null ? "current" : ""
+                    }</span>
+                  </div>
+                  <div class="lease-email-row">
+                    <input
+                      type="email"
+                      class="lease-email-input"
+                      data-lease-email="${idAttr}"
+                      value="${escapeHtml(l.email ?? "")}"
+                      placeholder="Email address"
+                      aria-label="Email address for ${escapeHtml(periodDesc)}"
+                      autocomplete="email"
+                    />
+                    <button
+                      type="button"
+                      class="btn-text lease-email-save"
+                      data-save-lease-email="${idAttr}"
+                    >Save</button>
+                    <span class="lease-email-status" data-lease-email-msg="${idAttr}" aria-live="polite"></span>
+                  </div>
                 </div>
                 <div class="lease-row-right">
                   <div class="lease-usage tabular" data-lease-usage="${idAttr}">
@@ -283,11 +335,41 @@ function renderEditPanel(data: UsageResp): void {
     : `<div class="lease-empty muted">No lease history yet. Click + to add a tenant.</div>`;
 
   panel.innerHTML = `
+    <h2>Edit room</h2>
+
+    <div class="edit-section">
+      <h3>Utilities</h3>
+      <p>Configure whether power and water monitoring are on or off for this room.</p>
+      <div class="switch-control-list">
+        <div class="switch-control-row">
+          <div>
+            <div class="switch-control-name"><span class="inline-utility">${utilityIconHtml("power")}Power</span></div>
+            <div class="switch-control-sub">${escapeHtml(powerSub)}</div>
+          </div>
+          <div class="switch-buttons">
+            <button type="button" class="${roomMod.power ? "active" : ""}" data-room-modality="power" data-enabled="true">On</button>
+            <button type="button" class="${!roomMod.power ? "active" : ""}" data-room-modality="power" data-enabled="false">Off</button>
+          </div>
+        </div>
+        <div class="switch-control-row">
+          <div>
+            <div class="switch-control-name"><span class="inline-utility">${utilityIconHtml("water")}Water</span></div>
+            <div class="switch-control-sub">${escapeHtml(waterSub)}</div>
+          </div>
+          <div class="switch-buttons">
+            <button type="button" class="${roomMod.water ? "active" : ""}" data-room-modality="water" data-enabled="true">On</button>
+            <button type="button" class="${!roomMod.water ? "active" : ""}" data-room-modality="water" data-enabled="false">Off</button>
+          </div>
+        </div>
+      </div>
+      <div class="edit-msg" id="modalitiesMsg"></div>
+    </div>
+
     <div class="edit-section">
       <div class="edit-head">
         <div>
           <h3>History</h3>
-          <p class="edit-hint">Edit start – end dates to backdate or adjust leases. Leave end date blank for the current tenant.</p>
+          <p class="edit-hint">Edit start – end dates to backdate or adjust leases, or attach a contact email to a period. Leave end date blank for the current tenant.</p>
         </div>
         <button type="button" class="btn-add-lease" id="addLeaseBtn" title="Add tenant" aria-label="Add tenant">+</button>
       </div>
@@ -300,6 +382,15 @@ function renderEditPanel(data: UsageResp): void {
     </div>
   `;
 
+  panel.querySelectorAll<HTMLButtonElement>("button[data-room-modality]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const kind = btn.dataset.roomModality as "power" | "water" | undefined;
+      const enabled = btn.dataset.enabled === "true";
+      if (!kind || roomMod[kind] === enabled) return;
+      void handleRoomModality(data.room.id, kind, enabled, btn);
+    });
+  });
+
   document.getElementById("addLeaseBtn")?.addEventListener("click", () => {
     void handleAddLease(data.room.id);
   });
@@ -307,6 +398,27 @@ function renderEditPanel(data: UsageResp): void {
   panel.querySelectorAll<HTMLInputElement>("input.lease-date-input").forEach((input) => {
     input.addEventListener("change", () => {
       void handleLeaseDateChange(data.room.id, input);
+    });
+  });
+
+  panel.querySelectorAll<HTMLInputElement>("input.lease-email-input").forEach((input) => {
+    input.addEventListener("input", () => {
+      input.classList.remove("invalid");
+      const leaseId = input.dataset.leaseEmail;
+      if (leaseId) setLeaseEmailStatus(leaseId, "", true);
+    });
+    input.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      const leaseId = input.dataset.leaseEmail;
+      if (leaseId) void handleSaveLeaseEmail(data.room.id, leaseId);
+    });
+  });
+
+  panel.querySelectorAll<HTMLButtonElement>("button[data-save-lease-email]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const leaseId = btn.dataset.saveLeaseEmail;
+      if (leaseId) void handleSaveLeaseEmail(data.room.id, leaseId);
     });
   });
 
@@ -325,7 +437,7 @@ function renderEditPanel(data: UsageResp): void {
 function updateEditPanelInPlace(data: UsageResp): void {
   const panel = document.getElementById("editPanel");
   if (!panel || panel.hidden) return;
-  const ratePerKWh = getElectricityRatePerKWh();
+  const ratePerKWh = getElectricityRatePerKWh(tenantId);
 
   for (const l of data.room.leases) {
     const kwh = leaseEnergyKWh(data, l.id);
@@ -357,10 +469,22 @@ function updateEditPanelInPlace(data: UsageResp): void {
     if (endInput && document.activeElement !== endInput && endInput.value !== wantedEnd) {
       endInput.value = wantedEnd;
     }
+    const emailInput = panel.querySelector<HTMLInputElement>(
+      `input.lease-email-input[data-lease-email="${CSS.escape(l.id)}"]`,
+    );
+    const wantedEmail = l.email ?? "";
+    if (
+      emailInput &&
+      document.activeElement !== emailInput &&
+      !emailInput.classList.contains("invalid") &&
+      emailInput.value === wantedEmail
+    ) {
+      emailInput.value = wantedEmail;
+    }
   }
 }
 
-function setEditMode(on: boolean): void {
+function setEditMode(on: boolean, syncUrl = true): void {
   editMode = on;
   const panel = document.getElementById("editPanel")!;
   const btn = document.getElementById("editToggle")!;
@@ -368,6 +492,33 @@ function setEditMode(on: boolean): void {
   btn.textContent = on ? "Done" : "Edit";
   btn.classList.toggle("active", on);
   if (on && roomData) renderEditPanel(roomData);
+  if (syncUrl && route) {
+    const base = `/${encodeURIComponent(route.tenantId)}/rooms/${encodeURIComponent(route.roomId)}`;
+    const nextPath = on ? `${base}/edit` : base;
+    if (window.location.pathname !== nextPath) {
+      window.history.pushState(null, "", `${nextPath}${window.location.search}`);
+    }
+  }
+}
+
+async function handleRoomModality(
+  roomId: string,
+  kind: "power" | "water",
+  enabled: boolean,
+  button: HTMLButtonElement,
+): Promise<void> {
+  button.disabled = true;
+  setEditMsg("modalitiesMsg", "", true);
+  try {
+    await jpost(
+      `/api/tenants/${encodeURIComponent(tenantId)}/rooms/${encodeURIComponent(roomId)}/modalities`,
+      { [kind]: enabled },
+    );
+    await reloadRoom(roomId);
+  } catch (err) {
+    setEditMsg("modalitiesMsg", String(err), false);
+    button.disabled = false;
+  }
 }
 
 function setEditMsg(id: string, text: string, ok: boolean): void {
@@ -377,6 +528,60 @@ function setEditMsg(id: string, text: string, ok: boolean): void {
   el.className = `edit-msg ${ok ? "ok" : "error"}`;
 }
 
+function setLeaseEmailStatus(leaseId: string, text: string, ok: boolean): void {
+  const el = document.querySelector<HTMLElement>(
+    `[data-lease-email-msg="${CSS.escape(leaseId)}"]`,
+  );
+  if (!el) return;
+  el.textContent = text;
+  el.className = text ? `lease-email-status ${ok ? "ok" : "error"}` : "lease-email-status";
+}
+
+async function handleSaveLeaseEmail(roomId: string, leaseId: string): Promise<void> {
+  const panel = document.getElementById("editPanel");
+  const input = panel?.querySelector<HTMLInputElement>(
+    `input.lease-email-input[data-lease-email="${CSS.escape(leaseId)}"]`,
+  );
+  const btn = panel?.querySelector<HTMLButtonElement>(
+    `button[data-save-lease-email="${CSS.escape(leaseId)}"]`,
+  );
+  if (!input) return;
+
+  const existingEmail = roomData?.room.leases.find((l) => l.id === leaseId)?.email ?? "";
+  const cleaned = normalizeEmail(input.value);
+
+  if (!cleaned && !existingEmail) {
+    input.classList.add("invalid");
+    setLeaseEmailStatus(leaseId, "Enter an email address.", false);
+    input.focus();
+    return;
+  }
+  if (cleaned && !isValidEmail(cleaned)) {
+    input.classList.add("invalid");
+    setLeaseEmailStatus(leaseId, "Enter a valid email address.", false);
+    input.focus();
+    return;
+  }
+
+  input.classList.remove("invalid");
+  if (btn) btn.disabled = true;
+  setLeaseEmailStatus(leaseId, "", true);
+
+  try {
+    await jpost(
+      `/api/tenants/${encodeURIComponent(tenantId)}/rooms/${encodeURIComponent(roomId)}/leases/${encodeURIComponent(leaseId)}/email`,
+      { email: cleaned || null },
+    );
+    input.value = cleaned;
+    await reloadRoom(roomId, { renderChart: false, renderEditPanel: false });
+    setLeaseEmailStatus(leaseId, cleaned ? "Saved" : "Cleared", true);
+  } catch (err) {
+    setLeaseEmailStatus(leaseId, String(err), false);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 async function persistLeases(
   roomId: string,
   leases: Lease[],
@@ -384,7 +589,10 @@ async function persistLeases(
 ): Promise<void> {
   setEditMsg("leaseEditMsg", "", true);
   try {
-    await jput(`/api/rooms/${encodeURIComponent(roomId)}/leases`, { leases });
+    await jput(
+      `/api/tenants/${encodeURIComponent(tenantId)}/rooms/${encodeURIComponent(roomId)}/leases`,
+      { leases },
+    );
     await reloadRoom(roomId, {
       renderChart: true,
       renderEditPanel: opts.rebuildPanel,
@@ -515,6 +723,44 @@ async function handleLeaseDateChange(
   await persistLeases(roomId, leases, { rebuildPanel: false });
 }
 
+async function renderRoomBody(
+  data: UsageResp,
+  opts: { renderChart?: boolean } = {},
+): Promise<void> {
+  const shouldRenderChart = opts.renderChart ?? true;
+  const powerOn = roomPowerActive(data);
+  const waterOn = roomWaterActive(data);
+
+  document.getElementById("stats")!.hidden = !powerOn;
+  document.getElementById("switchControls")!.hidden = !powerOn;
+  document.getElementById("powerChartCard")!.hidden = !powerOn;
+  document.getElementById("billsSection")!.hidden = !powerOn;
+
+  const notice = document.getElementById("roomUtilityNotice")!;
+  if (!powerOn) {
+    if (chart) {
+      chart.destroy();
+      chart = null;
+    }
+    notice.hidden = false;
+    const msg = waterOn
+      ? "Power monitoring is turned off for this room. Water telemetry UI is not rendered yet."
+      : "Power and water monitoring are turned off for this room.";
+    notice.innerHTML = `<div class="empty">${escapeHtml(msg)}</div>`;
+    return;
+  }
+
+  notice.hidden = true;
+  notice.innerHTML = "";
+  renderStats(data);
+  renderSwitchControls(data);
+  renderBills(data);
+  if (shouldRenderChart) {
+    const leaseStart = data.currentLease?.startDate ?? null;
+    await renderChart(data.room.id, chartRange, leaseStart);
+  }
+}
+
 async function reloadRoom(
   roomId: string,
   opts: { renderChart?: boolean; renderEditPanel?: boolean } = {},
@@ -523,17 +769,11 @@ async function reloadRoom(
   const renderEditPanelAfterLoad = opts.renderEditPanel ?? true;
   roomData = await fetchRoomUsage(roomId);
   renderHeader(roomData);
-  renderStats(roomData);
-  renderSwitchControls(roomData);
-  renderBills(roomData);
   if (editMode) {
     if (renderEditPanelAfterLoad) renderEditPanel(roomData);
     else updateEditPanelInPlace(roomData);
   }
-  const leaseStart = roomData.currentLease?.startDate ?? null;
-  if (renderChartAfterLoad) {
-    await renderChart(roomId, chartRange, leaseStart);
-  }
+  await renderRoomBody(roomData, { renderChart: renderChartAfterLoad });
 }
 
 function renderSwitchControls(data: UsageResp): void {
@@ -560,7 +800,7 @@ function renderSwitchControls(data: UsageResp): void {
           return `
             <div class="switch-control-row">
               <div>
-                <div class="switch-control-name">${escapeHtml(displayMonitorLabel(monitor, id))}</div>
+                <div class="switch-control-name"><span class="inline-utility">${utilityIconHtml("power")}${escapeHtml(displayMonitorLabel(monitor, id))}</span></div>
                 <div class="switch-control-sub">currently ${stateText}${queuedText}</div>
               </div>
               <div class="switch-buttons">
@@ -592,9 +832,10 @@ async function handleSwitch(
 ): Promise<void> {
   button.disabled = true;
   try {
-    await jpost(`/api/rooms/${encodeURIComponent(roomId)}/monitors/${encodeURIComponent(monitorId)}/switch`, {
-      output,
-    });
+    await jpost(
+      `/api/tenants/${encodeURIComponent(tenantId)}/rooms/${encodeURIComponent(roomId)}/monitors/${encodeURIComponent(monitorId)}/switch`,
+      { output },
+    );
     await reloadRoom(roomId);
   } catch (err) {
     showError(String(err));
@@ -620,7 +861,7 @@ function formatBillRange(from: string, to: string): string {
 function renderBills(data: UsageResp): void {
   const el = document.getElementById("bills")!;
   const bills = data.bills ?? [];
-  const ratePerKWh = getElectricityRatePerKWh();
+  const ratePerKWh = getElectricityRatePerKWh(tenantId);
   if (bills.length === 0) {
     el.innerHTML = `<div class="empty">No lease history yet, so there are no monthly bills.</div>`;
     return;
@@ -639,7 +880,7 @@ function renderBills(data: UsageResp): void {
                 </div>
               </div>
               <div class="bill-usage tabular">
-                <div class="bill-kwh">${fmtKWh(b.energyKWh)} kWh</div>
+                <div class="bill-kwh"><span class="inline-utility">${utilityIconHtml("power")}${fmtKWh(b.energyKWh)} kWh</span></div>
                 <div class="bill-cost">${fmtMoney(b.energyKWh * ratePerKWh)}</div>
               </div>
               <span class="bill-status ${b.status === "in_progress" ? "progress" : "final"}">
@@ -656,7 +897,7 @@ function renderBills(data: UsageResp): void {
 function renderStats(data: UsageResp): void {
   const latest = data.latest;
   const cls = freshnessClass(latest?.ts ?? null);
-  const ratePerKWh = getElectricityRatePerKWh();
+  const ratePerKWh = getElectricityRatePerKWh(tenantId);
   const rateText = `at ${fmtMoney(ratePerKWh)}/kWh`;
 
   // Per-monitor breakdowns only add value once a room has more than one feed.
@@ -791,9 +1032,9 @@ function formatLabel(iso: string, bucket: "hour" | "day" | "month"): string {
 
 async function renderChart(roomId: string, range: RangeKey, leaseStart: string | null): Promise<void> {
   const r = rangeFor(range, leaseStart);
-  document.getElementById("chartTitle")!.textContent = r.title;
+  document.getElementById("chartTitle")!.innerHTML = `${utilityIconHtml("power")}<span>${escapeHtml(r.title)}</span>`;
   const url =
-    `/api/rooms/${encodeURIComponent(roomId)}/series` +
+    `/api/tenants/${encodeURIComponent(tenantId)}/rooms/${encodeURIComponent(roomId)}/series` +
     `?from=${r.from.toISOString()}&to=${r.to.toISOString()}&bucket=${r.bucket}`;
   const data = await jget<SeriesResp>(url);
 
@@ -801,6 +1042,7 @@ async function renderChart(roomId: string, range: RangeKey, leaseStart: string |
   const values = data.series.map((p) => p.energyKWh);
 
   const canvas = document.getElementById("chart") as HTMLCanvasElement;
+  const chartTheme = chartAxisAndTooltipOptions();
   if (chart) chart.destroy();
   chart = new Chart(canvas, {
     type: "line",
@@ -810,8 +1052,8 @@ async function renderChart(roomId: string, range: RangeKey, leaseStart: string |
         {
           label: "kWh",
           data: values,
-          borderColor: "#a78bfa",
-          backgroundColor: "rgba(167, 139, 250, 0.15)",
+          borderColor: themeCssVar("--chart-power"),
+          backgroundColor: themeCssVar("--chart-power-fill"),
           fill: true,
           tension: 0.25,
           pointRadius: 0,
@@ -825,39 +1067,35 @@ async function renderChart(roomId: string, range: RangeKey, leaseStart: string |
       maintainAspectRatio: false,
       interaction: { mode: "index", intersect: false },
       plugins: {
-        legend: { display: false },
+        ...chartTheme.plugins,
         tooltip: {
-          backgroundColor: "#14181d",
-          borderColor: "#232a32",
-          borderWidth: 1,
-          titleColor: "#e6e9ee",
-          bodyColor: "#e6e9ee",
+          ...chartTheme.plugins.tooltip,
           callbacks: {
             label: (ctx) => `${(ctx.parsed.y as number).toFixed(2)} kWh`,
           },
         },
       },
-      scales: {
-        x: {
-          grid: { color: "#1b2026" },
-          ticks: { color: "#8d96a4", maxRotation: 0, autoSkipPadding: 12 },
-        },
-        y: {
-          grid: { color: "#1b2026" },
-          ticks: { color: "#8d96a4" },
-          beginAtZero: true,
-        },
-      },
+      scales: chartTheme.scales,
     },
   });
 }
 
 async function main(): Promise<void> {
-  const roomId = getRoomId();
-  if (!roomId) {
-    showError("No room id in URL.");
+  hydrateUtilityIcons();
+  if (!route) {
+    showError("Invalid tenant room URL.");
     return;
   }
+  const { roomId } = route;
+  const tenant = await jget<{
+    tenantId: string;
+    label: string;
+    modalities: { power: boolean; water: boolean };
+  }>(`/api/tenants/${encodeURIComponent(tenantId)}/config`);
+  tenantLabel = tenant.label;
+  tenantModalities = tenant.modalities;
+  (document.getElementById("allRoomsLink") as HTMLAnchorElement).href =
+    `/${encodeURIComponent(tenantId)}`;
 
   let data: UsageResp;
   try {
@@ -866,24 +1104,34 @@ async function main(): Promise<void> {
     document.getElementById("roomTitle")!.textContent = `Room ${roomId}`;
     showError(
       `Could not load room: ${String(err)}. ` +
-        `Make sure "${roomId}" is in data/rooms.json.`,
+        `Make sure "${roomId}" is in data/tenants/${tenantId}/rooms.json.`,
     );
     return;
   }
 
   roomData = data;
   renderHeader(data);
-  renderStats(data);
-  renderSwitchControls(data);
-  renderBills(data);
 
   const editBtn = document.getElementById("editToggle")!;
   editBtn.hidden = false;
   editBtn.addEventListener("click", () => setEditMode(!editMode));
+  window.addEventListener("popstate", () => {
+    const cur = routeIds();
+    if (cur) setEditMode(cur.edit, false);
+  });
 
-  const leaseStart = data.currentLease?.startDate ?? null;
+  if (route.edit) {
+    setEditMode(true, false);
+  }
+
   chartRange = "month";
-  await renderChart(roomId, chartRange, leaseStart);
+  await renderRoomBody(data);
+
+  setupThemeToggle(tenantId, () => {
+    if (!roomData || !roomPowerActive(roomData)) return;
+    const start = roomData.currentLease?.startDate ?? null;
+    void renderChart(roomId, chartRange, start);
+  });
 
   const toggle = document.getElementById("ranges")!;
   toggle.addEventListener("click", async (e) => {
@@ -892,7 +1140,8 @@ async function main(): Promise<void> {
     toggle.querySelectorAll("button").forEach((b) => b.classList.remove("active"));
     t.classList.add("active");
     chartRange = t.dataset.range as RangeKey;
-    const start = roomData?.currentLease?.startDate ?? null;
+    if (!roomData || !roomPowerActive(roomData)) return;
+    const start = roomData.currentLease?.startDate ?? null;
     await renderChart(roomId, chartRange, start);
   });
 

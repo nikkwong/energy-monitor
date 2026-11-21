@@ -3,8 +3,9 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="dark" />
+    <meta name="color-scheme" content="dark light" />
     <title>5214 · Room</title>
+    <script src="./theme-init.js"></script>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
@@ -14,7 +15,10 @@
         <div class="header-actions">
           <a id="rawDataLink" class="btn-text" href="#" hidden>Raw data</a>
           <button type="button" id="editToggle" class="btn-text" hidden>Edit</button>
-          <div class="crumbs"><a href="/">← all rooms</a></div>
+          <div class="crumbs"><a id="allRoomsLink" href="#">← all rooms</a></div>
+          <div class="header-icon-group">
+            <button type="button" class="icon-btn" data-theme-toggle aria-pressed="false" title="Light mode">☾</button>
+          </div>
         </div>
       </header>
       <div class="subtitle" id="roomSubtitle"></div>
@@ -22,13 +26,14 @@
       <div id="editPanel" class="edit-panel" hidden></div>
 
       <div id="errorBox"></div>
+      <div id="roomUtilityNotice" hidden></div>
 
       <div class="grid stats" id="stats"></div>
       <div id="switchControls" class="switch-controls"></div>
 
-      <div class="chart-card">
+      <div class="chart-card" id="powerChartCard">
         <div class="head">
-          <h2 id="chartTitle">Consumption</h2>
+          <h2 id="chartTitle"><span data-utility-icon="power"></span><span>Consumption</span></h2>
           <div class="range-toggle" id="ranges">
             <button data-range="month" class="active">This month</button>
             <button data-range="lease">Lease to date</button>
@@ -42,7 +47,7 @@
         </div>
       </div>
 
-      <div class="bills-section">
+      <div class="bills-section" id="billsSection">
         <h3>Monthly bills</h3>
         <div id="bills"></div>
       </div>

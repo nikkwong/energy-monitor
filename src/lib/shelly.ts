@@ -19,7 +19,7 @@
  *    which has the same `em1:N` / `em1data:N` keys at the top level.
  *
  * 3. Legacy "Action URL" GET with query params, e.g.
- *      /api/ingest/301/south?total_act_energy=12345&act_power=120
+ *      /api/tenants/5214/ingest/301/south?total_act_energy=12345&act_power=120
  *    This is what older firmwares post when set up via the "URL action" UI.
  *
  * Multi-channel devices (Pro EM, Pro 3EM) report several `em1:N` keys per

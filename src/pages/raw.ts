@@ -1,4 +1,4 @@
-import { jget } from "./common.ts";
+import { jget, setupThemeToggle } from "./common.ts";
 
 type RawReading = {
   ts: string;
@@ -16,10 +16,16 @@ type RawResponse = {
   readings: RawReading[];
 };
 
-function roomIdFromPath(): string {
-  const parts = window.location.pathname.split("/").filter(Boolean);
-  return parts.length >= 2 ? decodeURIComponent(parts[0]!) : "";
+function routeFromPath(): { tenantId: string; roomId: string } | null {
+  const parts = window.location.pathname.split("/").filter(Boolean).map(decodeURIComponent);
+  if (parts.length !== 4 || parts[1] !== "rooms" || parts[3] !== "raw") return null;
+  const tenantId = parts[0];
+  const roomId = parts[2];
+  return tenantId && roomId ? { tenantId, roomId } : null;
 }
+
+const route = routeFromPath();
+setupThemeToggle(route?.tenantId ?? "global");
 
 function escapeHtml(value: string): string {
   return value.replace(
@@ -33,11 +39,11 @@ function formatNumber(value: number): string {
   return Number.isFinite(value) ? value.toLocaleString(undefined, { maximumFractionDigits: 3 }) : "n/a";
 }
 
-function render(data: RawResponse): void {
+function render(tenantId: string, tenantLabel: string, data: RawResponse): void {
   document.getElementById("rawTitle")!.textContent = `${data.roomLabel} · raw data`;
-  document.title = `5214 · ${data.roomLabel} raw data`;
+  document.title = `${tenantLabel} · ${data.roomLabel} raw data`;
   const roomLink = document.getElementById("roomLink") as HTMLAnchorElement;
-  roomLink.href = `/${encodeURIComponent(data.roomId)}`;
+  roomLink.href = `/${encodeURIComponent(tenantId)}/rooms/${encodeURIComponent(data.roomId)}`;
 
   const el = document.getElementById("rawReadings")!;
   if (data.readings.length === 0) {
@@ -73,13 +79,16 @@ function render(data: RawResponse): void {
 }
 
 async function load(): Promise<void> {
-  const roomId = roomIdFromPath();
-  if (!roomId) throw new Error("No room id in URL.");
+  if (!route) throw new Error("Invalid tenant raw data URL.");
+  const { tenantId, roomId } = route;
   const limit = (document.getElementById("readingLimit") as HTMLSelectElement).value;
-  const data = await jget<RawResponse>(
-    `/api/rooms/${encodeURIComponent(roomId)}/raw?limit=${encodeURIComponent(limit)}`,
-  );
-  render(data);
+  const [tenant, data] = await Promise.all([
+    jget<{ tenantId: string; label: string }>(`/api/tenants/${encodeURIComponent(tenantId)}/config`),
+    jget<RawResponse>(
+      `/api/tenants/${encodeURIComponent(tenantId)}/rooms/${encodeURIComponent(roomId)}/raw?limit=${encodeURIComponent(limit)}`,
+    ),
+  ]);
+  render(tenantId, tenant.label, data);
 }
 
 document.getElementById("refreshBtn")!.addEventListener("click", () => {

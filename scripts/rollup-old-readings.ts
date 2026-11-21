@@ -13,20 +13,23 @@ import { gzipSync } from "node:zlib";
 import { appendFile, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { DailyRollup, Reading } from "../src/lib/types.ts";
-
-const DATA_DIR = resolve(process.env.DATA_DIR ?? resolve(process.cwd(), "data"));
-const READINGS_DIR = resolve(DATA_DIR, "readings");
-const ROLLUPS_DIR = resolve(DATA_DIR, "rollups");
-const ARCHIVE_DIR = resolve(DATA_DIR, "archive", "readings");
-const DAILY_ROLLUP_PATH = resolve(ROLLUPS_DIR, "daily.jsonl");
+import { pathsForTenant } from "../src/lib/data.ts";
+import { requireTenant } from "../src/lib/tenants.ts";
 
 const APPLY = process.argv.includes("--apply");
 const before = argValue("--before");
+const tenantId = argValue("--tenant");
 
-if (!before || !/^\d{4}-\d{2}$/.test(before)) {
-  console.error("usage: bun run rollup --before YYYY-MM [--apply]");
+if (!tenantId || !before || !/^\d{4}-\d{2}$/.test(before)) {
+  console.error("usage: bun run rollup --tenant TENANT_ID --before YYYY-MM [--apply]");
   process.exit(1);
 }
+await requireTenant(tenantId);
+const tenantPaths = pathsForTenant(tenantId);
+const READINGS_DIR = tenantPaths.readingsDir;
+const ROLLUPS_DIR = tenantPaths.rollupsDir;
+const ARCHIVE_DIR = resolve(tenantPaths.dataDir, "archive", "readings");
+const DAILY_ROLLUP_PATH = tenantPaths.dailyRollup;
 
 function argValue(name: string): string | null {
   const idx = process.argv.indexOf(name);

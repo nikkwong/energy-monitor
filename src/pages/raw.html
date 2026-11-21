@@ -3,16 +3,22 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="dark" />
+    <meta name="color-scheme" content="dark light" />
     <title>5214 · Raw data</title>
+    <script src="./theme-init.js"></script>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
     <div class="container">
       <header class="top">
         <h1 id="rawTitle">Raw data</h1>
-        <div class="crumbs">
-          <a id="roomLink" href="/">← room</a>
+        <div class="header-actions">
+          <div class="crumbs">
+            <a id="roomLink" href="/">← room</a>
+          </div>
+          <div class="header-icon-group">
+            <button type="button" class="icon-btn" data-theme-toggle aria-pressed="false" title="Light mode">☾</button>
+          </div>
         </div>
       </header>
 

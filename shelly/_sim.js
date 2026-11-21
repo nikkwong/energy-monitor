@@ -7,7 +7,7 @@
 //   bun run mock --base http://host:3000
 //
 // Legacy discover mode (rooms already on the server):
-//   bun run sim                         # one tick from GET /api/rooms, exit
+//   bun run sim --tenant 5214           # one tick from the tenant rooms API, exit
 //   bun run sim --watch                 # continuous
 //   bun run sim --discover              # same, explicit
 //
@@ -31,6 +31,7 @@ const DEFAULT_CONFIG = resolve(process.cwd(), "data/mock-rooms.json");
 
 const args = parseArgs(process.argv.slice(2));
 const BASE_URL = args.base ?? null;
+const TENANT_ID = args.tenant ?? "5214";
 const ROOM_FILTER = args.room ?? null;
 const WATCH = args.watch ?? false;
 const INTERVAL_MS =
@@ -49,6 +50,7 @@ function parseArgs(argv) {
     else if (a === "--discover") out.discover = true;
     else if (a === "--interval") out.interval = Number(argv[++i]);
     else if (a === "--room") out.room = argv[++i];
+    else if (a === "--tenant") out.tenant = argv[++i];
     else if (a === "--base") out.base = argv[++i];
     else if (a === "--config") out.config = resolve(process.cwd(), argv[++i]);
     else if (a.startsWith("--")) console.warn("unknown flag:", a);
@@ -265,7 +267,7 @@ async function postOnce(baseUrl, { room, monitor, seed, schedule }) {
     params: pickEmFields(status),
   });
   const r = await fetch(
-    `${baseUrl}/api/ingest/${encodeURIComponent(room)}/${encodeURIComponent(monitor)}`,
+    `${baseUrl}/api/tenants/${encodeURIComponent(TENANT_ID)}/ingest/${encodeURIComponent(room)}/${encodeURIComponent(monitor)}`,
     {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -320,8 +322,10 @@ function targetsFromConfig(cfg) {
  * @returns {Promise<Array<{ room: string, monitor: string, schedule?: null }>>}
  */
 async function discoverTargets(baseUrl) {
-  const r = await fetch(`${baseUrl}/api/rooms`);
-  if (!r.ok) throw new Error(`GET /api/rooms failed: ${r.status}`);
+  const r = await fetch(
+    `${baseUrl}/api/tenants/${encodeURIComponent(TENANT_ID)}/rooms`,
+  );
+  if (!r.ok) throw new Error(`GET tenant rooms failed: ${r.status}`);
   const { rooms } = await r.json();
   /** @type {Array<{ room: string, monitor: string, schedule?: null }>} */
   const targets = [];
@@ -373,7 +377,9 @@ async function main() {
     baseUrl = baseUrl ?? "http://localhost:3000";
     targets = await discoverTargets(baseUrl);
     if (targets.length === 0) {
-      console.error("no rooms on server — add to data/rooms.json or use mock config");
+      console.error(
+        `no rooms on server — add to data/tenants/${TENANT_ID}/rooms.json or use mock config`,
+      );
       process.exit(1);
     }
     intervalMs = intervalMs ?? 10 * 1000;

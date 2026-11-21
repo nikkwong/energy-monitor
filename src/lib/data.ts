@@ -7,16 +7,37 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { resolve } from "node:path";
-import type { DailyRollup, Lease, Monitor, Reading, RoomsConfig } from "./types.ts";
-import { DEFAULT_MONITOR_ID, roomUsesNamedMonitors } from "./monitors.ts";
+import type {
+  DailyRollup,
+  Lease,
+  Monitor,
+  Reading,
+  RoomsConfig,
+  UtilityModalities,
+} from "./types.ts";
+import {
+  DEFAULT_MONITOR_ID,
+  normalizeRoomModalities,
+  roomUsesNamedMonitors,
+} from "./monitors.ts";
+import { isValidEmail, normalizeEmail } from "./email.ts";
 import { hourlyStore, hourlyStoreReady } from "./hourly-store.ts";
+import { DATA_DIR, TENANT_ID_RE } from "./tenants.ts";
 
-const DATA_DIR = resolve(process.env.DATA_DIR ?? resolve(process.cwd(), "data"));
-const ROOMS_PATH = resolve(DATA_DIR, "rooms.json");
-const READINGS_DIR = resolve(DATA_DIR, "readings");
-const READINGS_PATH = resolve(DATA_DIR, "readings.jsonl");
-const ROLLUPS_DIR = resolve(DATA_DIR, "rollups");
-const DAILY_ROLLUP_PATH = resolve(ROLLUPS_DIR, "daily.jsonl");
+export function pathsForTenant(tenantId: string) {
+  if (!TENANT_ID_RE.test(tenantId)) throw new Error("invalid tenantId");
+  const dataDir = resolve(DATA_DIR, "tenants", tenantId);
+  const readingsDir = resolve(dataDir, "readings");
+  const rollupsDir = resolve(dataDir, "rollups");
+  return {
+    dataDir,
+    rooms: resolve(dataDir, "rooms.json"),
+    readings: resolve(dataDir, "readings.jsonl"),
+    readingsDir,
+    rollupsDir,
+    dailyRollup: resolve(rollupsDir, "daily.jsonl"),
+  } as const;
+}
 
 // Single in-process write queue. Serializes appends and atomic rewrites so we
 // never interleave a reading append with a rooms.json rewrite, and so concurrent
@@ -31,8 +52,8 @@ function enqueue<T>(fn: () => Promise<T>): Promise<T> {
   return next;
 }
 
-async function ensureDataDir(): Promise<void> {
-  await mkdir(DATA_DIR, { recursive: true });
+async function ensureDataDir(tenantId: string): Promise<void> {
+  await mkdir(pathsForTenant(tenantId).dataDir, { recursive: true });
 }
 
 function monthKeyFromDate(d: Date): string {
@@ -45,8 +66,8 @@ function monthKeyFromReading(r: Reading): string {
   return monthKeyFromDate(d);
 }
 
-function monthlyReadingPath(month: string): string {
-  return resolve(READINGS_DIR, `${month}.jsonl`);
+function monthlyReadingPath(tenantId: string, month: string): string {
+  return resolve(pathsForTenant(tenantId).readingsDir, `${month}.jsonl`);
 }
 
 function previousMonthKey(month: string): string {
@@ -76,10 +97,11 @@ function monthKeysForRange(from?: Date, to?: Date): Set<string> | null {
   return out;
 }
 
-export async function readRooms(): Promise<RoomsConfig> {
-  await ensureDataDir();
+export async function readRooms(tenantId: string): Promise<RoomsConfig> {
+  await ensureDataDir(tenantId);
+  const roomsPath = pathsForTenant(tenantId).rooms;
   try {
-    const text = await readFile(ROOMS_PATH, "utf8");
+    const text = await readFile(roomsPath, "utf8");
     const parsed = JSON.parse(text) as RoomsConfig;
     if (!parsed.rooms || typeof parsed.rooms !== "object") {
       return { rooms: {} };
@@ -88,32 +110,33 @@ export async function readRooms(): Promise<RoomsConfig> {
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
       const empty: RoomsConfig = { rooms: {} };
-      await writeRooms(empty);
+      await writeRooms(tenantId, empty);
       return empty;
     }
     throw err;
   }
 }
 
-export async function writeRooms(cfg: RoomsConfig): Promise<void> {
-  await ensureDataDir();
+export async function writeRooms(tenantId: string, cfg: RoomsConfig): Promise<void> {
+  await ensureDataDir(tenantId);
+  const roomsPath = pathsForTenant(tenantId).rooms;
   await enqueue(async () => {
-    const tmp = ROOMS_PATH + ".tmp";
+    const tmp = roomsPath + ".tmp";
     await writeFile(tmp, JSON.stringify(cfg, null, 2) + "\n", "utf8");
-    await rename(tmp, ROOMS_PATH);
+    await rename(tmp, roomsPath);
   });
 }
 
-export async function appendReading(r: Reading): Promise<void> {
-  await ensureDataDir();
-  await mkdir(READINGS_DIR, { recursive: true });
+export async function appendReading(tenantId: string, r: Reading): Promise<void> {
+  await ensureDataDir(tenantId);
+  await mkdir(pathsForTenant(tenantId).readingsDir, { recursive: true });
   const line = JSON.stringify(r) + "\n";
-  const path = monthlyReadingPath(monthKeyFromReading(r));
+  const path = monthlyReadingPath(tenantId, monthKeyFromReading(r));
   await enqueue(async () => {
     // JSONL remains the recovery/source-of-truth stream. The compact SQLite
     // store is a rebuildable query index with one energy row per hour.
     await appendFile(path, line, "utf8");
-    if (hourlyStoreReady()) hourlyStore().addReading(r);
+    if (hourlyStoreReady(tenantId)) hourlyStore(tenantId).addReading(r);
   });
 }
 
@@ -127,12 +150,13 @@ export async function appendReading(r: Reading): Promise<void> {
  *
  * Returns `false` if no such room existed (caller should 404).
  */
-export async function deleteRoom(roomId: string): Promise<boolean> {
-  await ensureDataDir();
+export async function deleteRoom(tenantId: string, roomId: string): Promise<boolean> {
+  await ensureDataDir(tenantId);
+  const roomsPath = pathsForTenant(tenantId).rooms;
   return enqueue(async () => {
     let cfg: RoomsConfig;
     try {
-      const text = await readFile(ROOMS_PATH, "utf8");
+      const text = await readFile(roomsPath, "utf8");
       const parsed = JSON.parse(text) as RoomsConfig;
       cfg =
         parsed && parsed.rooms && typeof parsed.rooms === "object"
@@ -144,9 +168,9 @@ export async function deleteRoom(roomId: string): Promise<boolean> {
     }
     if (!cfg.rooms[roomId]) return false;
     delete cfg.rooms[roomId];
-    const tmp = ROOMS_PATH + ".tmp";
+    const tmp = roomsPath + ".tmp";
     await writeFile(tmp, JSON.stringify(cfg, null, 2) + "\n", "utf8");
-    await rename(tmp, ROOMS_PATH);
+    await rename(tmp, roomsPath);
     return true;
   });
 }
@@ -159,14 +183,16 @@ export async function deleteRoom(roomId: string): Promise<boolean> {
  * Returns `false` if the room or monitor did not exist.
  */
 export async function deleteMonitor(
+  tenantId: string,
   roomId: string,
   monitorId: string,
 ): Promise<boolean> {
-  await ensureDataDir();
+  await ensureDataDir(tenantId);
+  const roomsPath = pathsForTenant(tenantId).rooms;
   return enqueue(async () => {
     let cfg: RoomsConfig;
     try {
-      const text = await readFile(ROOMS_PATH, "utf8");
+      const text = await readFile(roomsPath, "utf8");
       const parsed = JSON.parse(text) as RoomsConfig;
       cfg =
         parsed && parsed.rooms && typeof parsed.rooms === "object"
@@ -179,9 +205,9 @@ export async function deleteMonitor(
     const room = cfg.rooms[roomId];
     if (!room?.monitors?.[monitorId]) return false;
     delete room.monitors[monitorId];
-    const tmp = ROOMS_PATH + ".tmp";
+    const tmp = roomsPath + ".tmp";
     await writeFile(tmp, JSON.stringify(cfg, null, 2) + "\n", "utf8");
-    await rename(tmp, ROOMS_PATH);
+    await rename(tmp, roomsPath);
     return true;
   });
 }
@@ -196,13 +222,15 @@ export class MonitorSwitchError extends Error {
 }
 
 export async function setMonitorSwitchDesired(
+  tenantId: string,
   roomId: string,
   monitorId: string,
   output: boolean,
 ): Promise<Monitor> {
-  await ensureDataDir();
+  await ensureDataDir(tenantId);
+  const roomsPath = pathsForTenant(tenantId).rooms;
   return enqueue(async () => {
-    const text = await readFile(ROOMS_PATH, "utf8");
+    const text = await readFile(roomsPath, "utf8");
     const cfg = JSON.parse(text) as RoomsConfig;
     const room = cfg.rooms[roomId];
     if (!room) throw new MonitorSwitchError("no such room", 404);
@@ -213,7 +241,7 @@ export async function setMonitorSwitchDesired(
     }
     monitor.switch.desiredOutput = output;
     monitor.switch.updatedAt = new Date().toISOString();
-    await writeRoomsInQueue(cfg);
+    await writeRoomsInQueue(roomsPath, cfg);
     return monitor;
   });
 }
@@ -235,10 +263,10 @@ function nextLeaseId(roomId: string): string {
   return `lease-${roomId}-${Date.now()}`;
 }
 
-async function writeRoomsInQueue(cfg: RoomsConfig): Promise<void> {
-  const tmp = ROOMS_PATH + ".tmp";
+async function writeRoomsInQueue(roomsPath: string, cfg: RoomsConfig): Promise<void> {
+  const tmp = roomsPath + ".tmp";
   await writeFile(tmp, JSON.stringify(cfg, null, 2) + "\n", "utf8");
-  await rename(tmp, ROOMS_PATH);
+  await rename(tmp, roomsPath);
 }
 
 export function findCurrentLease(
@@ -274,12 +302,14 @@ function sortLeases(leases: Lease[]): Lease[] {
  * `endDate` is exclusive — readings on that date belong to the next tenant.
  */
 export async function endCurrentLease(
+  tenantId: string,
   roomId: string,
   endDate?: string,
 ): Promise<Lease> {
-  await ensureDataDir();
+  await ensureDataDir(tenantId);
+  const roomsPath = pathsForTenant(tenantId).rooms;
   return enqueue(async () => {
-    const text = await readFile(ROOMS_PATH, "utf8");
+    const text = await readFile(roomsPath, "utf8");
     const cfg = JSON.parse(text) as RoomsConfig;
     const room = cfg.rooms[roomId];
     if (!room) throw new LeaseError("no such room", 404);
@@ -295,7 +325,7 @@ export async function endCurrentLease(
 
     current.endDate = end;
     room.leases = sortLeases(room.leases);
-    await writeRoomsInQueue(cfg);
+    await writeRoomsInQueue(roomsPath, cfg);
     return current;
   });
 }
@@ -306,14 +336,16 @@ export async function endCurrentLease(
  * contiguous.
  */
 export async function startLease(
+  tenantId: string,
   roomId: string,
   tenant: string,
   startDate: string,
   endDate: string | null = null,
 ): Promise<Lease> {
-  await ensureDataDir();
+  await ensureDataDir(tenantId);
+  const roomsPath = pathsForTenant(tenantId).rooms;
   return enqueue(async () => {
-    const text = await readFile(ROOMS_PATH, "utf8");
+    const text = await readFile(roomsPath, "utf8");
     const cfg = JSON.parse(text) as RoomsConfig;
     const room = cfg.rooms[roomId];
     if (!room) throw new LeaseError("no such room", 404);
@@ -353,7 +385,7 @@ export async function startLease(
     };
     room.leases.push(lease);
     room.leases = sortLeases(room.leases);
-    await writeRoomsInQueue(cfg);
+    await writeRoomsInQueue(roomsPath, cfg);
     return lease;
   });
 }
@@ -361,6 +393,7 @@ export async function startLease(
 export type LeaseInput = {
   id?: string;
   tenant?: string;
+  email?: string | null;
   startDate: string;
   endDate?: string | null;
   notes?: string;
@@ -371,12 +404,14 @@ export type LeaseInput = {
  * backdating, editing start/end dates, adding, and removing leases).
  */
 export async function saveRoomLeases(
+  tenantId: string,
   roomId: string,
   inputs: LeaseInput[],
 ): Promise<Lease[]> {
-  await ensureDataDir();
+  await ensureDataDir(tenantId);
+  const roomsPath = pathsForTenant(tenantId).rooms;
   return enqueue(async () => {
-    const text = await readFile(ROOMS_PATH, "utf8");
+    const text = await readFile(roomsPath, "utf8");
     const cfg = JSON.parse(text) as RoomsConfig;
     const room = cfg.rooms[roomId];
     if (!room) throw new LeaseError("no such room", 404);
@@ -415,11 +450,24 @@ export async function saveRoomLeases(
         typeof item.tenant === "string"
           ? item.tenant.trim()
           : (prev?.tenant ?? "");
+      let email: string | undefined = prev?.email;
+      if (item.email !== undefined) {
+        const cleaned = item.email == null ? "" : normalizeEmail(item.email);
+        if (!cleaned) {
+          email = undefined;
+        } else {
+          if (!isValidEmail(cleaned)) {
+            throw new LeaseError("invalid email address", 400);
+          }
+          email = cleaned;
+        }
+      }
       const notes = item.notes ?? prev?.notes;
 
       out.push({
         id,
         tenant,
+        ...(email !== undefined ? { email } : {}),
         startDate: start,
         endDate: end,
         ...(notes !== undefined ? { notes } : {}),
@@ -427,7 +475,7 @@ export async function saveRoomLeases(
     }
 
     room.leases = sortLeases(out);
-    await writeRoomsInQueue(cfg);
+    await writeRoomsInQueue(roomsPath, cfg);
     return room.leases;
   });
 }
@@ -438,6 +486,77 @@ export class LeaseError extends Error {
     super(message);
     this.status = status;
   }
+}
+
+export async function setLeaseEmail(
+  tenantId: string,
+  roomId: string,
+  leaseId: string,
+  email: string | null,
+): Promise<Lease> {
+  await ensureDataDir(tenantId);
+  const roomsPath = pathsForTenant(tenantId).rooms;
+  return enqueue(async () => {
+    let text: string;
+    try {
+      text = await readFile(roomsPath, "utf8");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        throw new LeaseError("no such room", 404);
+      }
+      throw err;
+    }
+    const cfg = JSON.parse(text) as RoomsConfig;
+    const room = cfg.rooms[roomId];
+    if (!room) throw new LeaseError("no such room", 404);
+    const lease = room.leases.find((l) => l.id === leaseId);
+    if (!lease) throw new LeaseError("no such lease", 404);
+
+    const cleaned = email == null ? "" : normalizeEmail(email);
+    if (!cleaned) {
+      delete lease.email;
+    } else {
+      if (!isValidEmail(cleaned)) {
+        throw new LeaseError("invalid email address", 400);
+      }
+      lease.email = cleaned;
+    }
+
+    await writeRoomsInQueue(roomsPath, cfg);
+    return lease;
+  });
+}
+
+export async function setRoomModalities(
+  tenantId: string,
+  roomId: string,
+  patch: { power?: boolean; water?: boolean },
+): Promise<UtilityModalities> {
+  await ensureDataDir(tenantId);
+  const roomsPath = pathsForTenant(tenantId).rooms;
+  return enqueue(async () => {
+    let text: string;
+    try {
+      text = await readFile(roomsPath, "utf8");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        throw new LeaseError("no such room", 404);
+      }
+      throw err;
+    }
+    const cfg = JSON.parse(text) as RoomsConfig;
+    const room = cfg.rooms[roomId];
+    if (!room) throw new LeaseError("no such room", 404);
+
+    const prev = normalizeRoomModalities(room.modalities);
+    const next: UtilityModalities = {
+      power: typeof patch.power === "boolean" ? patch.power : prev.power,
+      water: typeof patch.water === "boolean" ? patch.water : prev.water,
+    };
+    room.modalities = next;
+    await writeRoomsInQueue(roomsPath, cfg);
+    return next;
+  });
 }
 
 /**
@@ -456,15 +575,17 @@ export class LeaseError extends Error {
  * actually changed, so steady-state ingest stays a no-op disk-wise.
  */
 export async function ensureRoomAndMonitor(
+  tenantId: string,
   roomId: string,
   monitorId: string,
   observed?: { ip?: string; switch?: { output?: boolean } },
 ): Promise<{ newRoom: boolean; newMonitor: boolean }> {
-  await ensureDataDir();
+  await ensureDataDir(tenantId);
+  const roomsPath = pathsForTenant(tenantId).rooms;
   return enqueue(async () => {
     let cfg: RoomsConfig;
     try {
-      const text = await readFile(ROOMS_PATH, "utf8");
+      const text = await readFile(roomsPath, "utf8");
       const parsed = JSON.parse(text) as RoomsConfig;
       cfg =
         parsed && parsed.rooms && typeof parsed.rooms === "object"
@@ -528,9 +649,9 @@ export async function ensureRoomAndMonitor(
     }
 
     if (dirty) {
-      const tmp = ROOMS_PATH + ".tmp";
+      const tmp = roomsPath + ".tmp";
       await writeFile(tmp, JSON.stringify(cfg, null, 2) + "\n", "utf8");
-      await rename(tmp, ROOMS_PATH);
+      await rename(tmp, roomsPath);
     }
 
     return { newRoom, newMonitor };
@@ -621,15 +742,16 @@ async function* iterReadingFile(path: string): AsyncGenerator<Reading> {
   }
 }
 
-async function monthlyReadingFiles(opts?: {
+async function monthlyReadingFiles(tenantId: string, opts?: {
   from?: Date;
   to?: Date;
 }): Promise<string[]> {
-  await ensureDataDir();
+  await ensureDataDir(tenantId);
+  const readingsDir = pathsForTenant(tenantId).readingsDir;
   const wanted = monthKeysForRange(opts?.from, opts?.to);
   let entries: string[];
   try {
-    entries = await readdir(READINGS_DIR);
+    entries = await readdir(readingsDir);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw err;
@@ -639,7 +761,7 @@ async function monthlyReadingFiles(opts?: {
     .map((name) => name.slice(0, 7))
     .filter((month) => !wanted || wanted.has(month))
     .sort()
-    .map((month) => monthlyReadingPath(month));
+    .map((month) => monthlyReadingPath(tenantId, month));
 }
 
 /**
@@ -647,12 +769,12 @@ async function monthlyReadingFiles(opts?: {
  * `from`/`to` limit monthly shard selection; the legacy file is always scanned
  * because it predates sharding and can contain any timestamp.
  */
-export async function* iterReadings(opts?: {
+export async function* iterReadings(tenantId: string, opts?: {
   from?: Date;
   to?: Date;
 }): AsyncGenerator<Reading> {
-  yield* iterReadingFile(READINGS_PATH);
-  for (const path of await monthlyReadingFiles(opts)) {
+  yield* iterReadingFile(pathsForTenant(tenantId).readings);
+  for (const path of await monthlyReadingFiles(tenantId, opts)) {
     yield* iterReadingFile(path);
   }
 }
@@ -710,11 +832,12 @@ async function recentReadingsFromFile(
  * chunks are walked backwards because telemetry is append-only.
  */
 export async function recentReadings(
+  tenantId: string,
   room: string,
   limit = 100,
 ): Promise<Reading[]> {
-  const files = (await monthlyReadingFiles()).reverse();
-  files.push(READINGS_PATH);
+  const files = (await monthlyReadingFiles(tenantId)).reverse();
+  files.push(pathsForTenant(tenantId).readings);
   const out: Reading[] = [];
   for (const path of files) {
     if (out.length >= limit) break;
@@ -725,21 +848,25 @@ export async function recentReadings(
   return out.sort((a, b) => b.ts.localeCompare(a.ts)).slice(0, limit);
 }
 
-export async function appendDailyRollups(rows: DailyRollup[]): Promise<void> {
+export async function appendDailyRollups(
+  tenantId: string,
+  rows: DailyRollup[],
+): Promise<void> {
   if (rows.length === 0) return;
-  await ensureDataDir();
-  await mkdir(ROLLUPS_DIR, { recursive: true });
+  await ensureDataDir(tenantId);
+  const tenantPaths = pathsForTenant(tenantId);
+  await mkdir(tenantPaths.rollupsDir, { recursive: true });
   const lines = rows.map((r) => JSON.stringify(r)).join("\n") + "\n";
-  await enqueue(() => appendFile(DAILY_ROLLUP_PATH, lines, "utf8"));
+  await enqueue(() => appendFile(tenantPaths.dailyRollup, lines, "utf8"));
 }
 
-export async function* iterDailyRollups(opts?: {
+export async function* iterDailyRollups(tenantId: string, opts?: {
   from?: Date;
   to?: Date;
 }): AsyncGenerator<DailyRollup> {
   const fromDay = opts?.from?.toISOString().slice(0, 10);
   const toDay = opts?.to?.toISOString().slice(0, 10);
-  const file = Bun.file(DAILY_ROLLUP_PATH);
+  const file = Bun.file(pathsForTenant(tenantId).dailyRollup);
   if (!(await file.exists())) return;
 
   const decoder = new TextDecoder();
@@ -778,9 +905,5 @@ export async function* iterDailyRollups(opts?: {
 
 export const paths = {
   dataDir: DATA_DIR,
-  rooms: ROOMS_PATH,
-  readings: READINGS_PATH,
-  readingsDir: READINGS_DIR,
-  rollupsDir: ROLLUPS_DIR,
-  dailyRollup: DAILY_ROLLUP_PATH,
+  tenantsDir: resolve(DATA_DIR, "tenants"),
 } as const;

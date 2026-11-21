@@ -3,6 +3,7 @@ export type DebugTrafficEntry = {
   at: string;
   method: string;
   path: string;
+  tenantId?: string;
   roomId?: string;
   monitorId?: string;
   status: number;

@@ -11,8 +11,9 @@ in-bathroom feed). Each one's id is a path segment in the ingest URL, so
 the server can keep their cumulative counters separate.
 
 You don't need to declare anything up front. The server treats the Shelly
-POSTs as the source of truth: the first POST from a new `(ROOM_ID,
-MONITOR_ID)` pair auto-creates a stub entry in `data/rooms.json` with
+POSTs as the source of truth: the first POST from a new `(TENANT_ID, ROOM_ID,
+MONITOR_ID)` tuple auto-creates a stub entry in
+`data/tenants/<TENANT_ID>/rooms.json` with
 sensible defaults (`label: "Room <id>"` for the room, `label: <id>` for
 the monitor, empty lease history). The server logs the registration:
 
@@ -20,7 +21,7 @@ the monitor, empty lease history). The server logs the registration:
 auto-registered room+monitor 301/south
 ```
 
-After that, edit `data/rooms.json` to add a friendlier label or to start
+After that, edit the tenant's `rooms.json` to add a friendlier label or to start
 tracking a tenant's lease — your edits stick because subsequent ingests
 only fill in *missing* fields, never overwrite. Example after curation:
 
@@ -67,7 +68,7 @@ generations, so the same `report.js` runs unmodified on a Gen4 unit.
 After **Run**, the script's Console will print:
 
 ```
-5214 reporter running: 301/south -> https://5214.example.com
+tenant reporter running: 5214/301/south -> https://5214.example.com
 probe: forwarding keys -> em1:0, em1data:0
 POST 200 ok
 ```
@@ -98,6 +99,7 @@ I'll extend the picker.
 2. Click **+ Create script** (or **Library**), name it `5214-reporter`.
 3. Paste the contents of [`report.js`](./report.js).
 4. Edit the constants at the top:
+   - `TENANT_ID` — the tenant slug configured in `data/tenants.json`.
    - `ROOM_ID` — pick a short id for the room. The server will auto-register it on the first POST. (e.g. `"301"`, `"b4"`.)
    - `MONITOR_ID` — pick a descriptive id for which feed within the room this device meters. (e.g. `"south"`, `"bathroom"`, or `"default"` if there's only one Shelly per room.) Also auto-registered on first POST.
    - `BASE_URL` — your dashboard's public URL, no trailing slash.
@@ -105,7 +107,7 @@ I'll extend the picker.
    - `SSL_CA` — leave `null` unless your server uses a self-signed TLS cert, then `"*"`.
 5. **Save**, then **Run** (▶), then toggle **Start on boot** so it survives reboots.
 6. Open the **Console** tab on the script — you should see lines like `POST 200 ok` every minute.
-7. Refresh your dashboard at `/<ROOM_ID>` — the "Right now" card should turn green.
+7. Refresh `/<TENANT_ID>/rooms/<ROOM_ID>` — the "Right now" card should turn green.
 
 ### Tips
 
@@ -115,7 +117,7 @@ I'll extend the picker.
 - **Same device moved to a different feed?** Don't reuse the old
   `MONITOR_ID` unless it's still on the same circuit — the cumulative
   counter delta would mis-attribute. Use a new `MONITOR_ID` and remove the
-  old one from `data/rooms.json` (its historical data stays in
+  old one from the tenant's `rooms.json` (its historical data stays in
   `readings.jsonl` correctly attributed).
 - **Network blip?** Lost POSTs are fine. The Shelly counter is cumulative, so
   the next successful POST captures the missed energy as a single delta. No
@@ -130,7 +132,7 @@ legacy GET-style endpoint. One action per channel:
 - **Method**: `GET`
 - **URL**:
   ```
-  https://5214.example.com/api/ingest/301/south?total_act_energy={total}&act_power={power}
+  https://5214.example.com/api/tenants/5214/ingest/301/south?total_act_energy={total}&act_power={power}
   ```
 
 The server falls back to parsing those querystring keys when no JSON body is
@@ -144,12 +146,12 @@ present.
   doesn't validate against an allowlist, so a typo in `MONITOR_ID`
   silently creates a phantom feed. Check the server log for the
   `auto-registered` line, then delete the bogus entry from
-  `data/rooms.json` to hide it. (Its typo'd readings stay in
+  the tenant's `rooms.json` to hide it. (Its typo'd readings stay in
   `readings.jsonl` correctly attributed.)
 - **No data showing on dashboard** — check the device console for `POST 200`.
   Then `tail -n 1 data/readings.jsonl | jq` on the server to confirm the
   payload landed and was parsed (look for non-zero `totalEnergyWh` and the
   expected `monitor` field).
 - **Aggregator shows 0 kWh** — the lease window is computed against the
-  `startDate` in `data/rooms.json`. If the lease starts in the future, no
+  `startDate` in the tenant's `rooms.json`. If the lease starts in the future, no
   readings count. Set it to a date on or before today.

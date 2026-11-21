@@ -62,11 +62,8 @@ function hourlyRowAllowed(
   ctx: { allowedRooms: Set<string>; monitorLists: Map<string, Set<string> | null> },
   room?: string,
 ): boolean {
-  if (room) {
-    if (row.room !== room) return false;
-  } else if (!ctx.allowedRooms.has(row.room)) {
-    return false;
-  }
+  if (!ctx.allowedRooms.has(row.room)) return false;
+  if (room && row.room !== room) return false;
   const allow = ctx.monitorLists.get(row.room);
   return !allow || allow.has(row.monitor);
 }
@@ -123,13 +120,25 @@ function roomFromCounterKey(key: string): string {
   return sep === -1 ? key : key.slice(0, sep);
 }
 
-async function readFilterContext(): Promise<{
+function roomPowerEnabled(room: RoomsConfig["rooms"][string] | undefined): boolean {
+  return room?.modalities?.power !== false;
+}
+
+function powerAllowedRooms(cfg: RoomsConfig): Set<string> {
+  const out = new Set<string>();
+  for (const [roomId, room] of Object.entries(cfg.rooms)) {
+    if (roomPowerEnabled(room)) out.add(roomId);
+  }
+  return out;
+}
+
+async function readFilterContext(tenantId: string): Promise<{
   allowedRooms: Set<string>;
   monitorLists: Map<string, Set<string> | null>;
 }> {
-  const cfg = await readRooms();
+  const cfg = await readRooms(tenantId);
   return {
-    allowedRooms: new Set(Object.keys(cfg.rooms)),
+    allowedRooms: powerAllowedRooms(cfg),
     monitorLists: monitorAllowlist(cfg),
   };
 }
@@ -139,11 +148,8 @@ function shouldUseReading(
   ctx: { allowedRooms: Set<string>; monitorLists: Map<string, Set<string> | null> },
   room?: string,
 ): boolean {
-  if (room) {
-    if (r.room !== room) return false;
-  } else if (!ctx.allowedRooms.has(r.room)) {
-    return false;
-  }
+  if (!ctx.allowedRooms.has(r.room)) return false;
+  if (room && r.room !== room) return false;
   return readingAllowed(r, ctx.monitorLists);
 }
 
@@ -152,11 +158,8 @@ function shouldUseRollup(
   ctx: { allowedRooms: Set<string>; monitorLists: Map<string, Set<string> | null> },
   room?: string,
 ): boolean {
-  if (room) {
-    if (r.room !== room) return false;
-  } else if (!ctx.allowedRooms.has(r.room)) {
-    return false;
-  }
+  if (!ctx.allowedRooms.has(r.room)) return false;
+  if (room && r.room !== room) return false;
   const allow = ctx.monitorLists.get(r.room);
   return !allow || allow.has(r.monitor);
 }
@@ -173,6 +176,12 @@ function monthStartMs(now: Date): number {
   monthFrom.setUTCDate(1);
   monthFrom.setUTCHours(0, 0, 0, 0);
   return monthFrom.getTime();
+}
+
+function dayStartUtcMs(now: Date): number {
+  const dayFrom = new Date(now);
+  dayFrom.setUTCHours(0, 0, 0, 0);
+  return dayFrom.getTime();
 }
 
 function startOfUtcMonth(d: Date): Date {
@@ -196,10 +205,11 @@ function monthLabel(d: Date): string {
 }
 
 /**
- * Single-pass metrics for every room — powers GET /api/rooms. Replaces the
+ * Single-pass metrics for every room — powers the tenant rooms API. Replaces the
  * old pattern of 3 full-file scans per room (lease + month + latest).
  */
 function computeAllRoomSummariesHourly(
+  tenantId: string,
   cfg: RoomsConfig,
   now: Date,
   todayFromMs: number,
@@ -215,12 +225,14 @@ function computeAllRoomSummariesHourly(
   const out = new Map<string, RoomSummaryMetrics>();
   const monitorLists = monitorAllowlist(cfg);
   const ctx = {
-    allowedRooms: new Set(Object.keys(cfg.rooms)),
+    allowedRooms: powerAllowedRooms(cfg),
     monitorLists,
   };
 
   for (const [roomId, room] of Object.entries(cfg.rooms)) {
-    leaseFromMs.set(roomId, leaseStartMs(room, now));
+    if (roomPowerEnabled(room)) {
+      leaseFromMs.set(roomId, leaseStartMs(room, now));
+    }
     out.set(roomId, {
       leaseKWh: 0,
       monthKWh: 0,
@@ -234,7 +246,8 @@ function computeAllRoomSummariesHourly(
     });
   }
 
-  for (const row of hourlyStore().allUsageRows(now)) {
+  const store = hourlyStore(tenantId);
+  for (const row of store.allUsageRows(now)) {
     if (!hourlyRowAllowed(row, ctx)) continue;
     const entry = out.get(row.room);
     if (!entry) continue;
@@ -261,7 +274,8 @@ function computeAllRoomSummariesHourly(
   }
 
   const liveFromMs = nowMs - LIVE_POWER_MAX_AGE_MS;
-  for (const latest of hourlyStore().latest()) {
+  for (const latest of store.latest()) {
+    if (!ctx.allowedRooms.has(latest.room)) continue;
     const entry = out.get(latest.room);
     if (!entry) continue;
     const allow = monitorLists.get(latest.room);
@@ -279,15 +293,16 @@ function computeAllRoomSummariesHourly(
 }
 
 export async function computeAllRoomSummaries(
+  tenantId: string,
   cfg: RoomsConfig,
   now = new Date(),
   todayFrom?: Date,
 ): Promise<Map<string, RoomSummaryMetrics>> {
-  const defaultTodayFrom = new Date(now);
-  defaultTodayFrom.setUTCHours(0, 0, 0, 0);
-  const todayFromMs = (todayFrom ?? defaultTodayFrom).getTime();
+  const todayFromMs = todayFrom ? todayFrom.getTime() : dayStartUtcMs(now);
 
-  if (hourlyStoreReady()) return computeAllRoomSummariesHourly(cfg, now, todayFromMs);
+  if (hourlyStoreReady(tenantId)) {
+    return computeAllRoomSummariesHourly(tenantId, cfg, now, todayFromMs);
+  }
 
   const nowMs = now.getTime();
   const livePowerFromMs = nowMs - LIVE_POWER_MAX_AGE_MS;
@@ -306,7 +321,9 @@ export async function computeAllRoomSummaries(
   const out = new Map<string, RoomSummaryMetrics>();
 
   for (const [roomId, room] of Object.entries(cfg.rooms)) {
-    leaseFromMs.set(roomId, leaseStartMs(room, now));
+    if (roomPowerEnabled(room)) {
+      leaseFromMs.set(roomId, leaseStartMs(room, now));
+    }
     leaseKWh.set(roomId, 0);
     monthKWh.set(roomId, 0);
     todayKWh.set(roomId, 0);
@@ -331,11 +348,11 @@ export async function computeAllRoomSummaries(
   const latestByKey = new Map<string, Reading>();
   const monitorLists = monitorAllowlist(cfg);
   const ctx = {
-    allowedRooms: new Set(Object.keys(cfg.rooms)),
+    allowedRooms: powerAllowedRooms(cfg),
     monitorLists,
   };
 
-  for await (const row of iterDailyRollups({
+  for await (const row of iterDailyRollups(tenantId, {
     from: new Date(0),
     to: now,
   })) {
@@ -368,7 +385,7 @@ export async function computeAllRoomSummaries(
   // Stream in append order instead of loading + sorting the full JSONL. Shelly
   // reports are append-only and effectively chronological; keeping this
   // streaming prevents a large mock-polluted file from blocking the process.
-  for await (const r of iterReadings()) {
+  for await (const r of iterReadings(tenantId)) {
     if (!leaseFromMs.has(r.room)) continue;
     if (!readingAllowed(r, monitorLists)) continue;
     const key = counterKey(r);
@@ -437,15 +454,16 @@ export async function computeAllRoomSummaries(
 }
 
 export async function computeUsage(opts: {
+  tenantId: string;
   room?: string;
   from: Date;
   to: Date;
 }): Promise<UsageSummary> {
-  const ctx = await readFilterContext();
-  if (hourlyStoreReady()) {
+  const ctx = await readFilterContext(opts.tenantId);
+  if (hourlyStoreReady(opts.tenantId)) {
     const monitors: Record<string, number> = {};
     let totalKWh = 0;
-    for (const row of hourlyStore().usageRows(opts.from, opts.to)) {
+    for (const row of hourlyStore(opts.tenantId).usageRows(opts.from, opts.to)) {
       if (!hourlyRowAllowed(row, ctx, opts.room)) continue;
       const kwh = rangedEnergyWh(row, opts.from.getTime()) / 1000;
       totalKWh += kwh;
@@ -460,7 +478,6 @@ export async function computeUsage(opts: {
       monitors,
     };
   }
-
   const last = new Map<string, number>();
   const monitors: Record<string, number> = {};
   let totalKWh = 0;
@@ -468,7 +485,7 @@ export async function computeUsage(opts: {
   const fromMs = opts.from.getTime();
   const toMs = opts.to.getTime();
 
-  for await (const row of iterDailyRollups({ from: opts.from, to: opts.to })) {
+  for await (const row of iterDailyRollups(opts.tenantId, { from: opts.from, to: opts.to })) {
     if (!shouldUseRollup(row, ctx, opts.room)) continue;
     totalKWh += row.energyKWh;
     if (opts.room) {
@@ -476,7 +493,7 @@ export async function computeUsage(opts: {
     }
   }
 
-  for await (const r of iterReadings({ from: opts.from, to: opts.to })) {
+  for await (const r of iterReadings(opts.tenantId, { from: opts.from, to: opts.to })) {
     if (!shouldUseReading(r, ctx, opts.room)) continue;
     const key = counterKey(r);
     const prev = last.get(key);
@@ -502,6 +519,7 @@ export async function computeUsage(opts: {
 }
 
 export async function computeMonthlyBills(opts: {
+  tenantId: string;
   room: string;
   leases: RoomsConfig["rooms"][string]["leases"];
   to: Date;
@@ -563,7 +581,7 @@ export async function computeMonthlyBills(opts: {
   const byKey = new Map<string, number>();
   for (const w of windows) byKey.set(w.key, 0);
 
-  const ctx = await readFilterContext();
+  const ctx = await readFilterContext(opts.tenantId);
   const firstFrom = windows.reduce((min, w) => (w.from < min ? w.from : min), windows[0]!.from);
   const lastTo = windows.reduce((max, w) => (w.to > max ? w.to : max), windows[0]!.to);
 
@@ -571,8 +589,8 @@ export async function computeMonthlyBills(opts: {
     return windows.find((w) => tsMs >= w.from.getTime() && tsMs < w.to.getTime());
   }
 
-  if (hourlyStoreReady()) {
-    for (const row of hourlyStore().usageRows(firstFrom, lastTo)) {
+  if (hourlyStoreReady(opts.tenantId)) {
+    for (const row of hourlyStore(opts.tenantId).usageRows(firstFrom, lastTo)) {
       if (!hourlyRowAllowed(row, ctx, opts.room)) continue;
       const w = windowForTs(row.hourMs);
       if (!w) continue;
@@ -592,7 +610,7 @@ export async function computeMonthlyBills(opts: {
       .sort((a, b) => b.from.localeCompare(a.from));
   }
 
-  for await (const row of iterDailyRollups({ from: firstFrom, to: lastTo })) {
+  for await (const row of iterDailyRollups(opts.tenantId, { from: firstFrom, to: lastTo })) {
     if (!shouldUseRollup(row, ctx, opts.room)) continue;
     const tsMs = new Date(row.date + "T00:00:00Z").getTime();
     const w = windowForTs(tsMs);
@@ -601,7 +619,7 @@ export async function computeMonthlyBills(opts: {
   }
 
   const last = new Map<string, number>();
-  for await (const r of iterReadings({ from: firstFrom, to: lastTo })) {
+  for await (const r of iterReadings(opts.tenantId, { from: firstFrom, to: lastTo })) {
     if (!shouldUseReading(r, ctx, opts.room)) continue;
     const key = counterKey(r);
     const prev = last.get(key);
@@ -629,21 +647,43 @@ export async function computeMonthlyBills(opts: {
     .sort((a, b) => b.from.localeCompare(a.from));
 }
 
+export function emptySeries(opts: {
+  from: Date;
+  to: Date;
+  bucket: Bucket;
+}): SeriesPoint[] {
+  const out: SeriesPoint[] = [];
+  const cursor = bucketStartUTC(opts.from, opts.bucket);
+  const end = opts.to;
+  while (cursor < end) {
+    out.push({ ts: cursor.toISOString(), energyKWh: 0 });
+    if (opts.bucket === "hour") {
+      cursor.setUTCHours(cursor.getUTCHours() + 1);
+    } else if (opts.bucket === "day") {
+      cursor.setUTCDate(cursor.getUTCDate() + 1);
+    } else {
+      cursor.setUTCMonth(cursor.getUTCMonth() + 1);
+    }
+  }
+  return out;
+}
+
 export async function computeSeries(opts: {
+  tenantId: string;
   room?: string;
   from: Date;
   to: Date;
   bucket: Bucket;
 }): Promise<SeriesPoint[]> {
-  const ctx = await readFilterContext();
+  const ctx = await readFilterContext(opts.tenantId);
   const last = new Map<string, number>();
   const buckets = new Map<number, number>();
 
   const fromMs = opts.from.getTime();
   const toMs = opts.to.getTime();
 
-  if (hourlyStoreReady()) {
-    for (const row of hourlyStore().usageRows(opts.from, opts.to)) {
+  if (hourlyStoreReady(opts.tenantId)) {
+    for (const row of hourlyStore(opts.tenantId).usageRows(opts.from, opts.to)) {
       if (!hourlyRowAllowed(row, ctx, opts.room)) continue;
       const bucketKey = bucketStartUTC(
         new Date(row.hourMs),
@@ -652,10 +692,13 @@ export async function computeSeries(opts: {
       const kwh = rangedEnergyWh(row, fromMs) / 1000;
       buckets.set(bucketKey, (buckets.get(bucketKey) ?? 0) + kwh);
     }
-    return materializeSeries(buckets, opts.from, opts.to, opts.bucket);
+    return emptySeries(opts).map((point) => ({
+      ts: point.ts,
+      energyKWh: buckets.get(new Date(point.ts).getTime()) ?? 0,
+    }));
   }
 
-  for await (const row of iterDailyRollups({ from: opts.from, to: opts.to })) {
+  for await (const row of iterDailyRollups(opts.tenantId, { from: opts.from, to: opts.to })) {
     if (!shouldUseRollup(row, ctx, opts.room)) continue;
     const bucketKey = bucketStartUTC(
       new Date(row.date + "T00:00:00Z"),
@@ -664,7 +707,7 @@ export async function computeSeries(opts: {
     buckets.set(bucketKey, (buckets.get(bucketKey) ?? 0) + row.energyKWh);
   }
 
-  for await (const r of iterReadings({ from: opts.from, to: opts.to })) {
+  for await (const r of iterReadings(opts.tenantId, { from: opts.from, to: opts.to })) {
     if (!shouldUseReading(r, ctx, opts.room)) continue;
     const key = counterKey(r);
     const prev = last.get(key);
@@ -679,40 +722,24 @@ export async function computeSeries(opts: {
     buckets.set(bucketKey, (buckets.get(bucketKey) ?? 0) + delta / 1000);
   }
 
-  return materializeSeries(buckets, opts.from, opts.to, opts.bucket);
+  return emptySeries(opts).map((point) => ({
+    ts: point.ts,
+    energyKWh: buckets.get(new Date(point.ts).getTime()) ?? 0,
+  }));
 }
 
-function materializeSeries(
-  buckets: Map<number, number>,
-  from: Date,
-  to: Date,
-  bucket: Bucket,
-): SeriesPoint[] {
-  const out: SeriesPoint[] = [];
-  const cursor = bucketStartUTC(from, bucket);
-  const end = to;
-  while (cursor < end) {
-    const k = cursor.getTime();
-    out.push({ ts: cursor.toISOString(), energyKWh: buckets.get(k) ?? 0 });
-    if (bucket === "hour") {
-      cursor.setUTCHours(cursor.getUTCHours() + 1);
-    } else if (bucket === "day") {
-      cursor.setUTCDate(cursor.getUTCDate() + 1);
-    } else {
-      cursor.setUTCMonth(cursor.getUTCMonth() + 1);
-    }
-  }
-  return out;
-}
-
-export async function latestReading(room: string, now = new Date()): Promise<LatestReading | null> {
-  if (hourlyStoreReady()) {
-    const cfg = await readRooms();
-    const monitorLists = monitorAllowlist(cfg);
-    const rows = hourlyStore()
+export async function latestReading(
+  tenantId: string,
+  room: string,
+  now = new Date(),
+): Promise<LatestReading | null> {
+  const ctx = await readFilterContext(tenantId);
+  if (!ctx.allowedRooms.has(room)) return null;
+  if (hourlyStoreReady(tenantId)) {
+    const rows = hourlyStore(tenantId)
       .latest(room)
       .filter((row) => {
-        const allow = monitorLists.get(row.room);
+        const allow = ctx.monitorLists.get(row.room);
         return !allow || allow.has(row.monitor);
       });
     if (rows.length === 0) return null;
@@ -736,8 +763,7 @@ export async function latestReading(room: string, now = new Date()): Promise<Lat
   }
 
   const perMonitor = new Map<string, Reading>();
-  const ctx = await readFilterContext();
-  for await (const r of iterReadings()) {
+  for await (const r of iterReadings(tenantId)) {
     if (!shouldUseReading(r, ctx, room)) continue;
     const cur = perMonitor.get(r.monitor);
     if (!cur || r.ts > cur.ts) perMonitor.set(r.monitor, r);

@@ -3,20 +3,24 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="dark" />
+    <meta name="color-scheme" content="dark light" />
     <title>5214 · Power dashboard</title>
+    <script src="./theme-init.js"></script>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
     <div class="container">
       <header class="top">
-        <h1>5214</h1>
+        <h1 id="tenantTitle">Dashboard</h1>
         <div class="header-actions">
           <div class="crumbs">
-            power dashboard ·
-            <a href="/api/config/rooms" target="_blank" rel="noopener">rooms.json</a>
+            utility dashboard ·
+            <a id="roomsConfigLink" href="#" target="_blank" rel="noopener">rooms.json</a>
           </div>
-          <button type="button" id="settingsToggle" class="icon-btn" aria-label="Settings" title="Settings">⚙</button>
+          <div class="header-icon-group">
+            <button type="button" id="settingsToggle" class="icon-btn" aria-label="Settings" title="Settings">⚙</button>
+            <button type="button" class="icon-btn" data-theme-toggle aria-pressed="false" title="Light mode">☾</button>
+          </div>
         </div>
       </header>
 
@@ -25,25 +29,47 @@
           <h2>Settings</h2>
           <button type="button" id="settingsClose" class="icon-btn" aria-label="Close settings">×</button>
         </div>
-        <div class="rate-control">
-          <label for="electricityRate">Electricity rate</label>
-          <div class="rate-input-wrap">
-            <span>$</span>
-            <input id="electricityRate" type="number" min="0" step="0.0001" inputmode="decimal" />
-            <span>/ kWh</span>
+        <div class="settings-rates">
+          <div class="rate-control" id="powerRateControl">
+            <label for="electricityRate"><span data-utility-icon="power"></span>Electricity rate</label>
+            <div class="rate-input-wrap">
+              <span>$</span>
+              <input id="electricityRate" type="number" min="0" step="0.0001" inputmode="decimal" />
+              <span>/ kWh</span>
+            </div>
+            <div class="rate-note" id="rateNote"></div>
           </div>
-          <div class="rate-note" id="rateNote"></div>
+          <div class="rate-control" id="waterRateControl" hidden>
+            <label for="waterRate"><span data-utility-icon="water"></span>Water rate</label>
+            <div class="rate-input-wrap">
+              <span>$</span>
+              <input id="waterRate" type="number" min="0" step="0.0001" inputmode="decimal" />
+              <span>/ gal</span>
+            </div>
+            <div class="rate-note" id="waterRateNote"></div>
+          </div>
         </div>
       </dialog>
 
+      <main id="powerDashboard">
       <div class="section-head">
         <h2 id="summaryTitle">Last 7 days</h2>
-        <div class="range-toggle" id="summaryRanges">
-          <button data-summary-range="month">This month</button>
-          <button data-summary-range="24h">Last 24h</button>
-          <button data-summary-range="7d" class="active">7d</button>
-          <button data-summary-range="30d">30d</button>
-          <button data-summary-range="all">All time</button>
+        <div class="section-controls">
+          <div class="modality-bar" id="modalityBar" hidden>
+            <span class="modality-bar-label">Show</span>
+            <div class="range-toggle" id="modalityToggle" role="group" aria-label="Show utilities">
+              <button type="button" data-modality="all" class="active">All</button>
+              <button type="button" data-modality="water"><span data-utility-icon="water"></span>Water</button>
+              <button type="button" data-modality="power"><span data-utility-icon="power"></span>Power</button>
+            </div>
+          </div>
+          <div class="range-toggle" id="summaryRanges">
+            <button data-summary-range="month">This month</button>
+            <button data-summary-range="24h">Last 24h</button>
+            <button data-summary-range="7d" class="active">7d</button>
+            <button data-summary-range="30d">30d</button>
+            <button data-summary-range="all">All time</button>
+          </div>
         </div>
       </div>
 
@@ -58,6 +84,16 @@
       <div class="chart-card">
         <div class="head">
           <h2 id="chartTitle">House total · last 7 days</h2>
+          <div class="chart-legend" id="chartLegend" hidden>
+            <button type="button" class="chart-legend-item" data-dataset-index="0">
+              <span class="chart-legend-swatch power"></span>
+              <span>Power</span>
+            </button>
+            <button type="button" class="chart-legend-item" data-dataset-index="1">
+              <span class="chart-legend-swatch water"></span>
+              <span>Water</span>
+            </button>
+          </div>
         </div>
         <div class="chart-wrap">
           <canvas id="totalChart"></canvas>
@@ -68,6 +104,7 @@
         Rooms
       </h2>
       <div class="grid cards" id="rooms"></div>
+      </main>
     </div>
     <script type="module" src="./index.ts"></script>
   </body>

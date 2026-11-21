@@ -1,6 +1,15 @@
-import type { Monitor, Room } from "./types.ts";
+import type { Monitor, Room, UtilityModalities } from "./types.ts";
 
 export const DEFAULT_MONITOR_ID = "default";
+
+export function normalizeRoomModalities(
+  modalities?: Partial<UtilityModalities> | null,
+): UtilityModalities {
+  return {
+    power: modalities?.power ?? true,
+    water: modalities?.water ?? true,
+  };
+}
 
 /** User-facing label — never surface the raw id `default`. */
 export function displayMonitorLabel(
@@ -37,9 +46,10 @@ export function sanitizeMonitors(
   return Object.keys(out).length > 0 ? out : monitors;
 }
 
-export function sanitizeRoom<T extends Room>(room: T): T {
-  if (!room.monitors) return room;
-  return { ...room, monitors: sanitizeMonitors(room.monitors) };
+export function sanitizeRoom<T extends Room>(room: T): T & { modalities: UtilityModalities } {
+  const modalities = normalizeRoomModalities(room.modalities);
+  if (!room.monitors) return { ...room, modalities };
+  return { ...room, modalities, monitors: sanitizeMonitors(room.monitors) };
 }
 
 export function roomUsesNamedMonitors(room: Room | undefined): boolean {

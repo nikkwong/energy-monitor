@@ -3,6 +3,8 @@
 export type Lease = {
   id: string;
   tenant: string;
+  /** Optional contact email for the tenant attached to this lease period. */
+  email?: string;
   /** Inclusive lease start, ISO date (YYYY-MM-DD) interpreted as local midnight. */
   startDate: string;
   /** Exclusive lease end, ISO date. `null` means current tenant. */
@@ -14,7 +16,8 @@ export type Lease = {
  * One physical Shelly device installed in a room. Each monitor owns its own
  * cumulative energy counter, so deltas are computed per `(room, monitor)`.
  *
- * The id is the path segment used in `POST /api/ingest/:roomId/:monitorId`
+ * The id is the path segment used in
+ * `POST /api/tenants/:tenantId/ingest/:roomId/:monitorId`
  * — pick something descriptive of the feed the CT clamp is on, e.g.
  * `"south"`, `"hvac"`, `"in-bathroom"`. Must match `MONITOR_ID_RE` in
  * server.ts.
@@ -22,7 +25,7 @@ export type Lease = {
 export type Monitor = {
   /**
    * Display label, e.g. "South wall mains". Defaults to the monitor id on
-   * auto-registration; edit `data/rooms.json` to override.
+   * auto-registration; edit the tenant's `rooms.json` to override.
    */
   label: string;
   /**
@@ -44,6 +47,11 @@ export type Monitor = {
   };
 };
 
+export type UtilityModalities = {
+  power: boolean;
+  water: boolean;
+};
+
 /**
  * `rooms.json` is operator-editable overlay metadata. Entries are
  * auto-created on the first POST from a new `(room, monitor)` pair (see
@@ -54,6 +62,11 @@ export type Monitor = {
 export type Room = {
   /** Display label, e.g. "Room 301". Defaults to `"Room <id>"` on auto-register. */
   label: string;
+  /**
+   * Enabled utilities for this room (mirrors tenant `modalities`).
+   * Defaults to `{ power: true, water: true }` when omitted in `rooms.json`.
+   */
+  modalities?: UtilityModalities;
   /**
    * Monitors known to belong to this room. Auto-populated from ingest POSTs;
    * the operator can edit the labels here. Always present after first POST,

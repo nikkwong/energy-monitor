@@ -1,4 +1,4 @@
-// 5214 dashboard reporter — paste into Shelly's Scripts UI.
+// Tenant dashboard reporter — paste into Shelly's Scripts UI.
 //
 // Compatibility: Shelly Gen2 / Gen3 / Gen4. The scripting engine (Espruino)
 // is shared across all three generations, and the calls used here
@@ -9,10 +9,11 @@
 //   Then click "Start on boot" so it survives reboots.
 //
 // What to edit:
-//   * CONFIG.ROOM_ID    — the room this device meters (must match data/rooms.json)
+//   * CONFIG.TENANT_ID  — dashboard tenant slug (must match data/tenants.json)
+//   * CONFIG.ROOM_ID    — the room this device meters
 //   * CONFIG.MONITOR_ID — which feed within the room this device is on, e.g.
 //                         "south", "north", "in-bathroom". Must match a key
-//                         under the room's `monitors` in data/rooms.json.
+//                         under the room's `monitors` in the tenant rooms.json.
 //                         Use "default" for single-monitor rooms.
 //   * CONFIG.BASE_URL   — your dashboard's public URL, no trailing slash
 //   * CONFIG.INTERVAL_S — how often to POST (seconds)
@@ -21,6 +22,7 @@
 // Output (`print(...)`) appears in the device's Script "Console" tab.
 
 let CONFIG = {
+  TENANT_ID: "5214",
   ROOM_ID: "301",
   MONITOR_ID: "default",
   BASE_URL: "http://34.69.79.104:3000",
@@ -145,7 +147,9 @@ function postPayload(params) {
   let req = {
     url:
       CONFIG.BASE_URL +
-      "/api/ingest/" +
+      "/api/tenants/" +
+      pathSegment(CONFIG.TENANT_ID) +
+      "/ingest/" +
       pathSegment(CONFIG.ROOM_ID) +
       "/" +
       pathSegment(CONFIG.MONITOR_ID),
@@ -262,8 +266,8 @@ function postReport() {
 
 Timer.set(CONFIG.INTERVAL_S * 1000, true, postReport);
 print(
-  "5214 reporter running:",
-  CONFIG.ROOM_ID + "/" + CONFIG.MONITOR_ID,
+  "tenant reporter running:",
+  CONFIG.TENANT_ID + "/" + CONFIG.ROOM_ID + "/" + CONFIG.MONITOR_ID,
   "->",
   CONFIG.BASE_URL,
 );

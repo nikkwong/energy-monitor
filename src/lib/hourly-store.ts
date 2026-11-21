@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { resolve } from "node:path";
 import type { DailyRollup, Reading } from "./types.ts";
+import { DATA_DIR, TENANT_ID_RE } from "./tenants.ts";
 
 export type HourlyUsageRow = {
   hourMs: number;
@@ -18,9 +19,12 @@ export type LatestStoredReading = {
   totalEnergyWh: number;
 };
 
-const DATA_DIR = resolve(process.env.DATA_DIR ?? resolve(process.cwd(), "data"));
-export const HOURLY_DB_PATH = resolve(DATA_DIR, "usage.sqlite");
 const HOUR_MS = 60 * 60 * 1000;
+
+export function hourlyDbPathForTenant(tenantId: string): string {
+  if (!TENANT_ID_RE.test(tenantId)) throw new Error("invalid tenantId");
+  return resolve(DATA_DIR, "tenants", tenantId, "usage.sqlite");
+}
 
 function hourStartMs(tsMs: number): number {
   return Math.floor(tsMs / HOUR_MS) * HOUR_MS;
@@ -29,7 +33,7 @@ function hourStartMs(tsMs: number): number {
 export class HourlyStore {
   readonly db: Database;
 
-  constructor(path = HOURLY_DB_PATH, opts: { wal?: boolean } = {}) {
+  constructor(path: string, opts: { wal?: boolean } = {}) {
     this.db = new Database(path, { create: true, strict: true });
     if (opts.wal) this.db.run("PRAGMA journal_mode = WAL");
     this.db.run("PRAGMA synchronous = NORMAL");
@@ -238,13 +242,22 @@ export class HourlyStore {
   }
 }
 
-let defaultStore: HourlyStore | null = null;
+const storesByTenant = new Map<string, HourlyStore>();
 
-export function hourlyStore(): HourlyStore {
-  defaultStore ??= new HourlyStore(HOURLY_DB_PATH, { wal: true });
-  return defaultStore;
+export function hourlyStore(tenantId: string): HourlyStore {
+  let store = storesByTenant.get(tenantId);
+  if (!store) {
+    store = new HourlyStore(hourlyDbPathForTenant(tenantId), { wal: true });
+    storesByTenant.set(tenantId, store);
+  }
+  return store;
 }
 
-export function hourlyStoreReady(): boolean {
-  return hourlyStore().isReady();
+export function hourlyStoreReady(tenantId: string): boolean {
+  const dbPath = hourlyDbPathForTenant(tenantId);
+  // Avoid creating an empty SQLite file on disk for tenants that have never built an index.
+  if (!storesByTenant.has(tenantId) && !Bun.file(dbPath).size) {
+    return false;
+  }
+  return hourlyStore(tenantId).isReady();
 }

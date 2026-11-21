@@ -12,11 +12,24 @@
 import { createWriteStream } from "node:fs";
 import { mkdir, rename } from "node:fs/promises";
 import { resolve } from "node:path";
+import { pathsForTenant } from "../src/lib/data.ts";
+import { requireTenant } from "../src/lib/tenants.ts";
 
-const DATA_DIR = resolve(process.env.DATA_DIR ?? resolve(process.cwd(), "data"));
-const LEGACY_PATH = resolve(DATA_DIR, "readings.jsonl");
-const READINGS_DIR = resolve(DATA_DIR, "readings");
+const tenantId = argValue("--tenant");
+if (!tenantId) {
+  console.error("usage: bun run migrate:readings --tenant TENANT_ID [--apply]");
+  process.exit(1);
+}
+await requireTenant(tenantId);
+const tenantPaths = pathsForTenant(tenantId);
+const LEGACY_PATH = tenantPaths.readings;
+const READINGS_DIR = tenantPaths.readingsDir;
 const APPLY = process.argv.includes("--apply");
+
+function argValue(name: string): string | null {
+  const idx = process.argv.indexOf(name);
+  return idx === -1 ? null : (process.argv[idx + 1] ?? null);
+}
 
 function monthFromLine(line: string): string | null {
   try {
@@ -98,10 +111,10 @@ for (const [month, count] of [...counts].sort()) {
 if (malformed) console.log(`malformed/skipped: ${malformed}`);
 
 if (!APPLY) {
-  console.log("\ndry run only. Re-run with: bun run migrate:readings --apply");
+  console.log(`\ndry run only. Re-run with: bun run migrate:readings --tenant ${tenantId} --apply`);
 } else {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const archived = resolve(DATA_DIR, `readings.jsonl.migrated-${stamp}`);
+  const archived = resolve(tenantPaths.dataDir, `readings.jsonl.migrated-${stamp}`);
   await rename(LEGACY_PATH, archived);
   console.log(`\nwrote monthly shards and moved legacy file to ${archived}`);
 }

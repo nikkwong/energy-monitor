@@ -7,21 +7,33 @@ import {
   TimeScale,
   CategoryScale,
   Tooltip,
+  Legend,
   Filler,
 } from "chart.js";
 
 import {
   DEFAULT_ELECTRICITY_RATE_PER_KWH,
+  DEFAULT_WATER_RATE_PER_GAL,
+  fmtAxisDollars,
+  fmtGal,
+  fmtGpm,
   fmtKWh,
   fmtMoney,
   fmtW,
   fmtRelativeTime,
   freshnessClass,
   getElectricityRatePerKWh,
+  getWaterRatePerGal,
   jget,
   saveElectricityRatePerKWh,
+  saveWaterRatePerGal,
+  setupThemeToggle,
   startOfMonthLocal,
+  startOfTodayLocal,
+  chartAxisAndTooltipOptions,
+  themeCssVar,
 } from "./common.ts";
+import { hydrateUtilityIcons, utilityIconHtml } from "./icons.ts";
 
 Chart.register(
   LineController,
@@ -31,12 +43,14 @@ Chart.register(
   TimeScale,
   CategoryScale,
   Tooltip,
+  Legend,
   Filler,
 );
 
 type RoomSummary = {
   id: string;
   label: string;
+  modalities?: { power: boolean; water: boolean };
   currentTenant: string | null;
   leaseStart: string | null;
   leaseKWh: number;
@@ -48,17 +62,52 @@ type RoomSummary = {
   allTimeKWh: number;
   powerW: number | null;
   lastSeen: string | null;
+  leaseWaterGal?: number;
+  monthWaterGal?: number;
+  todayWaterGal?: number;
+  dayWaterGal?: number;
+  weekWaterGal?: number;
+  thirtyDayWaterGal?: number;
+  allTimeWaterGal?: number;
+  flowGpm?: number | null;
+  waterLastSeen?: string | null;
+};
+
+type SeriesPoint = {
+  ts: string;
+  energyKWh: number;
+  waterGal?: number;
 };
 
 type SeriesResp = {
   from: string;
   to: string;
   bucket: "hour" | "day" | "month";
-  series: Array<{ ts: string; energyKWh: number }>;
+  series: SeriesPoint[];
 };
 
-let chart: Chart | null = null;
+type TenantConfig = {
+  tenantId: string;
+  label: string;
+  modalities: { power: boolean; water: boolean };
+};
+
 type SummaryRange = "month" | "24h" | "7d" | "30d" | "all";
+type ModalityView = "all" | "water" | "power";
+
+type UtilityRates = {
+  electricityRatePerKWh: number;
+  waterRatePerGal: number;
+};
+
+function tenantIdFromPath(): string {
+  const segment = window.location.pathname.split("/").filter(Boolean)[0];
+  return segment ? decodeURIComponent(segment) : "";
+}
+
+const tenantId = tenantIdFromPath();
+let chart: Chart | null = null;
+let cachedSeries: { range: SummaryRange; data: SeriesResp } | null = null;
 
 function rangeLabel(range: SummaryRange): string {
   if (range === "24h") return "Last 24 hours";
@@ -76,33 +125,136 @@ function rangeKWh(r: RoomSummary, range: SummaryRange): number {
   return r.monthKWh;
 }
 
-function renderTotals(rooms: RoomSummary[], ratePerKWh: number, range: SummaryRange): void {
-  const rangeTotal = rooms.reduce((s, r) => s + rangeKWh(r, range), 0);
-  const todayTotal = rooms.reduce((s, r) => s + r.todayKWh, 0);
-  const powerTotal = rooms.reduce((s, r) => s + (r.powerW ?? 0), 0);
-  const live = rooms.filter((r) => freshnessClass(r.lastSeen) === "live").length;
-  document.getElementById("summaryTitle")!.textContent = rangeLabel(range);
+function rangeWaterGal(r: RoomSummary, range: SummaryRange): number {
+  if (range === "24h") return r.dayWaterGal ?? 0;
+  if (range === "7d") return r.weekWaterGal ?? 0;
+  if (range === "30d") return r.thirtyDayWaterGal ?? 0;
+  if (range === "all") return r.allTimeWaterGal ?? 0;
+  return r.monthWaterGal ?? 0;
+}
 
+function roomModalities(r: RoomSummary): { power: boolean; water: boolean } {
+  return {
+    power: r.modalities?.power ?? true,
+    water: r.modalities?.water ?? true,
+  };
+}
+
+function latestRoomSeen(r: RoomSummary, view: ModalityView): string | null {
+  const m = roomModalities(r);
+  const powerSeen = m.power ? r.lastSeen : null;
+  const waterSeen = m.water ? (r.waterLastSeen ?? null) : null;
+  if (view === "power") return powerSeen;
+  if (view === "water") return waterSeen;
+  if (powerSeen && waterSeen) {
+    return powerSeen >= waterSeen ? powerSeen : waterSeen;
+  }
+  return powerSeen ?? waterSeen ?? null;
+}
+
+function renderTotals(
+  rooms: RoomSummary[],
+  rates: UtilityRates,
+  range: SummaryRange,
+  view: ModalityView,
+): void {
+  const powerRooms = rooms.filter((r) => roomModalities(r).power);
+  const waterRooms = rooms.filter((r) => roomModalities(r).water);
+  const rangePowerKWh = powerRooms.reduce((s, r) => s + rangeKWh(r, range), 0);
+  const todayPowerKWh = powerRooms.reduce((s, r) => s + (r.todayKWh ?? 0), 0);
+  const powerTotal = powerRooms.reduce((s, r) => s + (r.powerW ?? 0), 0);
+  const livePower = powerRooms.filter((r) => freshnessClass(r.lastSeen) === "live").length;
+
+  const rangeWater = waterRooms.reduce((s, r) => s + rangeWaterGal(r, range), 0);
+  const todayWater = waterRooms.reduce((s, r) => s + (r.todayWaterGal ?? 0), 0);
+  const hasAnyFlow = waterRooms.some((r) => r.flowGpm != null);
+  const flowTotal = hasAnyFlow
+    ? waterRooms.reduce((s, r) => s + (r.flowGpm ?? 0), 0)
+    : null;
+  const liveWater = waterRooms.filter((r) => freshnessClass(r.waterLastSeen ?? null) === "live").length;
+
+  const rangePowerCost = rangePowerKWh * rates.electricityRatePerKWh;
+  const todayPowerCost = todayPowerKWh * rates.electricityRatePerKWh;
+  const rangeWaterCost = rangeWater * rates.waterRatePerGal;
+  const todayWaterCost = todayWater * rates.waterRatePerGal;
+
+  const powerIcon = utilityIconHtml("power");
+  const waterIcon = utilityIconHtml("water");
+
+  document.getElementById("summaryTitle")!.textContent = rangeLabel(range);
   const el = document.getElementById("totals")!;
-  el.innerHTML = `
-    <div class="card">
-      <div class="label">${rangeLabel(range)}</div>
-      <div class="value tabular">${fmtKWh(rangeTotal)}<span class="unit">kWh</span></div>
-      <div class="cost tabular">${fmtMoney(rangeTotal * ratePerKWh)}</div>
-      <div class="sub">across all rooms</div>
-    </div>
-    <div class="card">
-      <div class="label">Right now</div>
-      <div class="value tabular">${fmtW(powerTotal)}</div>
-      <div class="sub">${live}/${rooms.length} rooms reporting</div>
-    </div>
-    <div class="card">
-      <div class="label">Used today</div>
-      <div class="value tabular">${fmtKWh(todayTotal)}<span class="unit">kWh</span></div>
-      <div class="cost tabular">${fmtMoney(todayTotal * ratePerKWh)}</div>
-      <div class="sub">across all rooms</div>
-    </div>
-  `;
+
+  if (view === "water") {
+    el.innerHTML = `
+      <div class="card">
+        <div class="label">${rangeLabel(range)}</div>
+        <div class="value tabular">${fmtGal(rangeWater)}<span class="unit">gal</span></div>
+        <div class="cost tabular">${fmtMoney(rangeWaterCost)}</div>
+        <div class="sub">across all rooms</div>
+      </div>
+      <div class="card">
+        <div class="label">Right now</div>
+        <div class="value tabular">${fmtGpm(flowTotal)}</div>
+        <div class="sub">${liveWater}/${waterRooms.length} rooms reporting</div>
+      </div>
+      <div class="card">
+        <div class="label">Used today</div>
+        <div class="value tabular">${fmtGal(todayWater)}<span class="unit">gal</span></div>
+        <div class="cost tabular">${fmtMoney(todayWaterCost)}</div>
+        <div class="sub">across all rooms</div>
+      </div>
+    `;
+  } else if (view === "all") {
+    el.innerHTML = `
+      <div class="card">
+        <div class="label">${rangeLabel(range)}</div>
+        <div class="value tabular">${fmtMoney(rangePowerCost + rangeWaterCost)}</div>
+        <div class="sub">
+          <span class="inline-utility">${powerIcon}${fmtKWh(rangePowerKWh)} kWh</span>
+          ·
+          <span class="inline-utility">${waterIcon}${fmtGal(rangeWater)} gal</span>
+        </div>
+      </div>
+      <div class="card">
+        <div class="label">Right now</div>
+        <div class="value tabular dual-live-value">
+          <span class="inline-utility">${powerIcon}${fmtW(powerTotal)}</span>
+          <span class="muted">·</span>
+          <span class="inline-utility">${waterIcon}${fmtGpm(flowTotal)}</span>
+        </div>
+        <div class="sub">${livePower}/${powerRooms.length} power · ${liveWater}/${waterRooms.length} water reporting</div>
+      </div>
+      <div class="card">
+        <div class="label">Used today</div>
+        <div class="value tabular">${fmtMoney(todayPowerCost + todayWaterCost)}</div>
+        <div class="sub">
+          <span class="inline-utility">${powerIcon}${fmtKWh(todayPowerKWh)} kWh</span>
+          ·
+          <span class="inline-utility">${waterIcon}${fmtGal(todayWater)} gal</span>
+        </div>
+      </div>
+    `;
+  } else {
+    el.innerHTML = `
+      <div class="card">
+        <div class="label">${rangeLabel(range)}</div>
+        <div class="value tabular">${fmtKWh(rangePowerKWh)}<span class="unit">kWh</span></div>
+        <div class="cost tabular">${fmtMoney(rangePowerCost)}</div>
+        <div class="sub">across all rooms</div>
+      </div>
+      <div class="card">
+        <div class="label">Right now</div>
+        <div class="value tabular">${fmtW(powerTotal)}</div>
+        <div class="sub">${livePower}/${powerRooms.length} rooms reporting</div>
+      </div>
+      <div class="card">
+        <div class="label">Used today</div>
+        <div class="value tabular">${fmtKWh(todayPowerKWh)}<span class="unit">kWh</span></div>
+        <div class="cost tabular">${fmtMoney(todayPowerCost)}</div>
+        <div class="sub">across all rooms</div>
+      </div>
+    `;
+  }
   updateStatsCarousel();
 }
 
@@ -137,37 +289,104 @@ function attachStatsCarousel(): void {
   window.addEventListener("resize", updateStatsCarousel);
 }
 
-function renderRooms(rooms: RoomSummary[], ratePerKWh: number, range: SummaryRange): void {
+function attachChartLegend(): void {
+  const legendEl = document.getElementById("chartLegend");
+  legendEl?.addEventListener("click", (e) => {
+    const btn = (e.target as HTMLElement)?.closest(
+      "button[data-dataset-index]",
+    ) as HTMLButtonElement | null;
+    if (!btn || !chart) return;
+    const idx = Number(btn.dataset.datasetIndex);
+    if (!Number.isInteger(idx) || !chart.data.datasets[idx]) return;
+    const nextVisible = !chart.isDatasetVisible(idx);
+    chart.setDatasetVisibility(idx, nextVisible);
+    btn.classList.toggle("is-hidden", !nextVisible);
+    chart.update();
+  });
+}
+
+function renderRooms(
+  rooms: RoomSummary[],
+  rates: UtilityRates,
+  range: SummaryRange,
+  view: ModalityView,
+): void {
   const el = document.getElementById("rooms")!;
   if (rooms.length === 0) {
     el.innerHTML = `
       <div class="empty" style="grid-column: 1 / -1;">
-        No rooms configured. Edit <code>data/rooms.json</code> to add rooms.
+        No rooms configured. Edit <code>data/tenants/${escapeHtml(tenantId)}/rooms.json</code> to add rooms.
       </div>`;
     return;
   }
-  el.innerHTML = rooms
+  const visibleRooms = rooms.filter((r) => {
+    const m = roomModalities(r);
+    if (view === "water") return m.water;
+    if (view === "power") return m.power;
+    return true;
+  });
+  if (visibleRooms.length === 0) {
+    el.innerHTML = `
+      <div class="empty" style="grid-column: 1 / -1;">
+        No rooms have ${view === "water" ? "water" : "power"} monitoring enabled.
+      </div>`;
+    return;
+  }
+  el.innerHTML = visibleRooms
     .map((r) => {
-      const cls = freshnessClass(r.lastSeen);
+      const m = roomModalities(r);
+      const seen = latestRoomSeen(r, view);
+      const cls = freshnessClass(seen);
       const idAttr = escapeHtml(r.id);
       const labelAttr = escapeHtml(r.label);
       const kwh = rangeKWh(r, range);
-      return `
-        <a href="/${encodeURIComponent(r.id)}" class="card room">
+      const gal = rangeWaterGal(r, range);
+      const powerCost = kwh * rates.electricityRatePerKWh;
+      const waterCost = gal * rates.waterRatePerGal;
+
+      const powerIcon = utilityIconHtml("power");
+      const waterIcon = utilityIconHtml("water");
+
+      const showPower = view === "power" || (view === "all" && m.power);
+      const showWater = view === "water" || (view === "all" && m.water);
+
+      let rowsHtml: string;
+      if (showPower && showWater) {
+        rowsHtml = `
+          <div class="row"><span class="k"><span class="inline-utility">${powerIcon}${rangeLabel(range)}</span></span>
+            <span class="v tabular">${fmtKWh(kwh)} kWh · ${fmtMoney(powerCost)}</span></div>
+          <div class="row"><span class="k"><span class="inline-utility">${waterIcon}${rangeLabel(range)}</span></span>
+            <span class="v tabular">${fmtGal(gal)} gal · ${fmtMoney(waterCost)}</span></div>
+          <div class="row"><span class="k">Now</span>
+            <span class="v tabular"><span class="inline-utility">${powerIcon}${fmtW(r.powerW)}</span> · <span class="inline-utility">${waterIcon}${fmtGpm(r.flowGpm)}</span></span></div>`;
+      } else if (showWater) {
+        rowsHtml = `
+          <div class="row"><span class="k"><span class="inline-utility">${waterIcon}${rangeLabel(range)}</span></span>
+            <span class="v tabular">${fmtGal(gal)} gal · ${fmtMoney(waterCost)}</span></div>
+          <div class="row"><span class="k">Now</span>
+            <span class="v tabular">${fmtGpm(r.flowGpm)}</span></div>`;
+      } else if (showPower) {
+        rowsHtml = `
+          <div class="row"><span class="k"><span class="inline-utility">${powerIcon}${rangeLabel(range)}</span></span>
+            <span class="v tabular">${fmtKWh(kwh)} kWh · ${fmtMoney(powerCost)}</span></div>
+          <div class="row"><span class="k">Now</span>
+            <span class="v tabular">${fmtW(r.powerW)}</span></div>`;
+      } else {
+        rowsHtml = `
+          <div class="row"><span class="k">Monitoring</span>
+            <span class="v">off</span></div>`;
+      }
+
+      const inner = `
           <button class="card-delete" data-room-id="${idAttr}" data-room-label="${labelAttr}"
                   aria-label="Delete ${labelAttr}" title="Delete ${labelAttr}">×</button>
           <h3><span class="dot ${cls}"></span>${escapeHtml(r.label)}</h3>
-          <div class="tenant">${fmtRelativeTime(r.lastSeen)}</div>
-          <div class="row"><span class="k">${rangeLabel(range)}</span>
-            <span class="v tabular">${fmtKWh(kwh)} kWh · ${fmtMoney(kwh * ratePerKWh)}</span></div>
-          <div class="row"><span class="k">Since lease start</span>
-            <span class="v tabular">${fmtKWh(r.leaseKWh)} kWh · ${fmtMoney(r.leaseKWh * ratePerKWh)}</span></div>
-          <div class="row"><span class="k">Now</span>
-            <span class="v tabular">${fmtW(r.powerW)}</span></div>
-        </a>`;
+          <div class="tenant">${fmtRelativeTime(seen)}</div>
+          ${rowsHtml}`;
+
+      return `<a href="/${encodeURIComponent(tenantId)}/rooms/${encodeURIComponent(r.id)}" class="card room">${inner}</a>`;
     })
     .join("");
-
 }
 
 function attachRoomActions(): void {
@@ -191,9 +410,12 @@ function attachRoomActions(): void {
 
     btn.disabled = true;
     try {
-      const res = await fetch(`/api/rooms/${encodeURIComponent(roomId)}`, {
-        method: "DELETE",
-      });
+      const res = await fetch(
+        `/api/tenants/${encodeURIComponent(tenantId)}/rooms/${encodeURIComponent(roomId)}`,
+        {
+          method: "DELETE",
+        },
+      );
       if (!res.ok) {
         const text = await res.text().catch(() => "");
         throw new Error(`${res.status}: ${text || res.statusText}`);
@@ -206,39 +428,68 @@ function attachRoomActions(): void {
   });
 }
 
-function setupRateControl(rooms: RoomSummary[], getRange: () => SummaryRange): number {
-  let rate = getElectricityRatePerKWh();
-  const input = document.getElementById("electricityRate") as HTMLInputElement;
-  const note = document.getElementById("rateNote")!;
+function setupRateControls(
+  modalities: TenantConfig["modalities"],
+  onChange: (rates: UtilityRates) => void,
+): UtilityRates {
+  const rates: UtilityRates = {
+    electricityRatePerKWh: getElectricityRatePerKWh(tenantId),
+    waterRatePerGal: getWaterRatePerGal(tenantId),
+  };
+
+  const powerBlock = document.getElementById("powerRateControl")!;
+  const waterBlock = document.getElementById("waterRateControl")!;
+  powerBlock.hidden = !modalities.power;
+  waterBlock.hidden = !modalities.water;
+
+  const powerInput = document.getElementById("electricityRate") as HTMLInputElement;
+  const powerNote = document.getElementById("rateNote")!;
+  const waterInput = document.getElementById("waterRate") as HTMLInputElement;
+  const waterNote = document.getElementById("waterRateNote")!;
   const dialog = document.getElementById("settingsDialog") as HTMLDialogElement;
   const toggle = document.getElementById("settingsToggle") as HTMLButtonElement;
   const close = document.getElementById("settingsClose") as HTMLButtonElement;
-  input.value = rate.toFixed(4);
-  note.textContent = `Saved in this browser. Default is ${fmtMoney(DEFAULT_ELECTRICITY_RATE_PER_KWH)}/kWh.`;
+
+  powerInput.value = rates.electricityRatePerKWh.toFixed(4);
+  powerNote.textContent = `Saved in this browser. Default is ${fmtMoney(DEFAULT_ELECTRICITY_RATE_PER_KWH)}/kWh.`;
+  waterInput.value = rates.waterRatePerGal.toFixed(4);
+  waterNote.textContent = `Saved in this browser. Default is $${DEFAULT_WATER_RATE_PER_GAL.toFixed(4)}/gal.`;
 
   toggle.addEventListener("click", () => {
     dialog.showModal();
-    input.focus();
+    if (modalities.power) powerInput.focus();
+    else if (modalities.water) waterInput.focus();
   });
   close.addEventListener("click", () => dialog.close());
   dialog.addEventListener("click", (e) => {
     if (e.target === dialog) dialog.close();
   });
 
-  input.addEventListener("input", () => {
-    const next = Number(input.value);
+  powerInput.addEventListener("input", () => {
+    const next = Number(powerInput.value);
     if (!Number.isFinite(next) || next <= 0) {
-      note.textContent = "Enter a positive dollar-per-kWh rate.";
+      powerNote.textContent = "Enter a positive dollar-per-kWh rate.";
       return;
     }
-    rate = next;
-    saveElectricityRatePerKWh(rate);
-    note.textContent = "Saved in this browser.";
-    renderTotals(rooms, rate, getRange());
-    renderRooms(rooms, rate, getRange());
+    rates.electricityRatePerKWh = next;
+    saveElectricityRatePerKWh(tenantId, next);
+    powerNote.textContent = "Saved in this browser.";
+    onChange({ ...rates });
   });
 
-  return rate;
+  waterInput.addEventListener("input", () => {
+    const next = Number(waterInput.value);
+    if (!Number.isFinite(next) || next <= 0) {
+      waterNote.textContent = "Enter a positive dollar-per-gallon rate.";
+      return;
+    }
+    rates.waterRatePerGal = next;
+    saveWaterRatePerGal(tenantId, next);
+    waterNote.textContent = "Saved in this browser.";
+    onChange({ ...rates });
+  });
+
+  return rates;
 }
 
 function escapeHtml(s: string): string {
@@ -249,38 +500,50 @@ function escapeHtml(s: string): string {
   );
 }
 
-function chartRange(range: SummaryRange): {
+function chartRange(
+  range: SummaryRange,
+  view: ModalityView,
+  bothModalitiesEnabled: boolean,
+): {
   bucket: "hour" | "day" | "month";
   from: Date;
   title: string;
 } {
+  const prefix =
+    view === "all"
+      ? "House total"
+      : bothModalitiesEnabled
+        ? view === "water"
+          ? "House water"
+          : "House power"
+        : "House total";
   const to = new Date();
   if (range === "24h") {
     return {
       bucket: "hour",
       from: new Date(to.getTime() - 24 * 60 * 60 * 1000),
-      title: "House total · last 24 hours",
+      title: `${prefix} · last 24 hours`,
     };
   }
   if (range === "7d") {
     return {
       bucket: "day",
       from: new Date(to.getTime() - 7 * 24 * 60 * 60 * 1000),
-      title: "House total · last 7 days",
+      title: `${prefix} · last 7 days`,
     };
   }
   if (range === "30d") {
     return {
       bucket: "day",
       from: new Date(to.getTime() - 30 * 24 * 60 * 60 * 1000),
-      title: "House total · last 30 days",
+      title: `${prefix} · last 30 days`,
     };
   }
   if (range === "all") {
     return {
       bucket: "month",
       from: new Date(0),
-      title: "House total · all time",
+      title: `${prefix} · all time`,
     };
   }
   const from = new Date();
@@ -289,68 +552,154 @@ function chartRange(range: SummaryRange): {
   return {
     bucket: "day",
     from,
-    title: "House total · this month",
+    title: `${prefix} · this month`,
   };
 }
 
-async function renderChart(range: SummaryRange): Promise<void> {
+async function loadSeries(range: SummaryRange, forceFetch = false): Promise<SeriesResp> {
+  if (!forceFetch && cachedSeries?.range === range) {
+    return cachedSeries.data;
+  }
   const to = new Date();
-  const { bucket, from, title } = chartRange(range);
-  document.getElementById("chartTitle")!.textContent = title;
-  const url = `/api/series?from=${from.toISOString()}&to=${to.toISOString()}&bucket=${bucket}`;
+  const { bucket, from } = chartRange(range, "power", false);
+  const url =
+    `/api/tenants/${encodeURIComponent(tenantId)}/series` +
+    `?from=${from.toISOString()}&to=${to.toISOString()}&bucket=${bucket}`;
   const data = await jget<SeriesResp>(url);
+  cachedSeries = { range, data };
+  return data;
+}
+
+async function renderChart(
+  range: SummaryRange,
+  view: ModalityView,
+  rates: UtilityRates,
+  bothModalitiesEnabled: boolean,
+  forceFetch = false,
+): Promise<void> {
+  const { bucket, title } = chartRange(range, view, bothModalitiesEnabled);
+  const titleIcons =
+    view === "all"
+      ? `${utilityIconHtml("power")}${utilityIconHtml("water")}`
+      : view === "water"
+        ? utilityIconHtml("water")
+        : utilityIconHtml("power");
+  document.getElementById("chartTitle")!.innerHTML = `${titleIcons}<span>${escapeHtml(title)}</span>`;
+  const data = await loadSeries(range, forceFetch);
 
   const labels = data.series.map((p) => formatBucketLabel(p.ts, bucket));
-  const values = data.series.map((p) => p.energyKWh);
-
   const canvas = document.getElementById("totalChart") as HTMLCanvasElement;
+
+  const isDollarCombined = view === "all";
+  const legendEl = document.getElementById("chartLegend")!;
+  legendEl.hidden = !isDollarCombined;
+  legendEl
+    .querySelectorAll<HTMLButtonElement>(".chart-legend-item")
+    .forEach((btn) => btn.classList.remove("is-hidden"));
+
+  const chartTheme = chartAxisAndTooltipOptions(
+    isDollarCombined
+      ? {
+          yAxisLabel: "USD ($)",
+          showLegend: false,
+          yTickCallback: (v) => fmtAxisDollars(Number(v)),
+        }
+      : {
+          yAxisLabel: view === "water" ? "gal" : "kWh",
+          showLegend: false,
+        },
+  );
+
+  const datasets =
+    view === "all"
+      ? [
+          {
+            label: "Power",
+            data: data.series.map((p) => p.energyKWh * rates.electricityRatePerKWh),
+            borderColor: themeCssVar("--chart-power"),
+            backgroundColor: themeCssVar("--chart-power-fill"),
+            fill: true,
+            tension: 0.25,
+            pointRadius: 0,
+            pointHoverRadius: 4,
+            borderWidth: 2,
+          },
+          {
+            label: "Water",
+            data: data.series.map((p) => (p.waterGal ?? 0) * rates.waterRatePerGal),
+            borderColor: themeCssVar("--chart-water"),
+            backgroundColor: themeCssVar("--chart-water-fill"),
+            fill: true,
+            tension: 0.25,
+            pointRadius: 0,
+            pointHoverRadius: 4,
+            borderWidth: 2,
+          },
+        ]
+      : view === "water"
+        ? [
+            {
+              label: "gal",
+              data: data.series.map((p) => p.waterGal ?? 0),
+              borderColor: themeCssVar("--chart-water"),
+              backgroundColor: themeCssVar("--chart-water-fill"),
+              fill: true,
+              tension: 0.25,
+              pointRadius: 0,
+              pointHoverRadius: 4,
+              borderWidth: 2,
+            },
+          ]
+        : [
+            {
+              label: "kWh",
+              data: data.series.map((p) => p.energyKWh),
+              borderColor: themeCssVar("--chart-power"),
+              backgroundColor: themeCssVar("--chart-power-fill"),
+              fill: true,
+              tension: 0.25,
+              pointRadius: 0,
+              pointHoverRadius: 4,
+              borderWidth: 2,
+            },
+          ];
+
   if (chart) chart.destroy();
   chart = new Chart(canvas, {
     type: "line",
     data: {
       labels,
-      datasets: [
-        {
-          label: "kWh",
-          data: values,
-          borderColor: "#7dd3fc",
-          backgroundColor: "rgba(125, 211, 252, 0.15)",
-          fill: true,
-          tension: 0.25,
-          pointRadius: 0,
-          pointHoverRadius: 4,
-          borderWidth: 2,
-        },
-      ],
+      datasets,
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
       interaction: { mode: "index", intersect: false },
       plugins: {
-        legend: { display: false },
+        ...chartTheme.plugins,
         tooltip: {
-          backgroundColor: "#14181d",
-          borderColor: "#232a32",
-          borderWidth: 1,
-          titleColor: "#e6e9ee",
-          bodyColor: "#e6e9ee",
+          ...chartTheme.plugins.tooltip,
           callbacks: {
-            label: (ctx) => `${(ctx.parsed.y as number).toFixed(2)} kWh`,
+            label: (ctx) => {
+              const y = ctx.parsed.y as number;
+              const point = data.series[ctx.dataIndex];
+              if (view === "all") {
+                if (ctx.datasetIndex === 0) {
+                  const kwh = point?.energyKWh ?? 0;
+                  return `Power: ${fmtMoney(y)} (${fmtKWh(kwh)} kWh)`;
+                }
+                const gal = point?.waterGal ?? 0;
+                return `Water: ${fmtMoney(y)} (${fmtGal(gal)} gal)`;
+              }
+              if (view === "water") {
+                return `${y.toFixed(2)} gal (${fmtMoney(y * rates.waterRatePerGal)})`;
+              }
+              return `${y.toFixed(2)} kWh (${fmtMoney(y * rates.electricityRatePerKWh)})`;
+            },
           },
         },
       },
-      scales: {
-        x: {
-          grid: { color: "#1b2026" },
-          ticks: { color: "#8d96a4", maxRotation: 0, autoSkipPadding: 12 },
-        },
-        y: {
-          grid: { color: "#1b2026" },
-          ticks: { color: "#8d96a4" },
-          beginAtZero: true,
-        },
-      },
+      scales: chartTheme.scales,
     },
   });
 }
@@ -368,21 +717,91 @@ function formatBucketLabel(iso: string, bucket: "hour" | "day" | "month"): strin
 
 async function main(): Promise<void> {
   void startOfMonthLocal;
+  hydrateUtilityIcons();
+  if (!tenantId) throw new Error("No tenant id in URL.");
+  let summaryRange: SummaryRange = "7d";
+  const tenant = await jget<TenantConfig>(
+    `/api/tenants/${encodeURIComponent(tenantId)}/config`,
+  );
+  document.getElementById("tenantTitle")!.textContent = tenant.label;
+  document.title = `${tenant.label} · Utility dashboard`;
+  const configLink = document.getElementById("roomsConfigLink") as HTMLAnchorElement;
+  configLink.href = `/api/tenants/${encodeURIComponent(tenantId)}/config/rooms`;
+
+  const hasPower = tenant.modalities.power;
+  const hasWater = tenant.modalities.water;
+  const bothEnabled = hasPower && hasWater;
+
+  if (!hasPower && !hasWater) {
+    setupThemeToggle(tenantId);
+    document.getElementById("settingsToggle")!.hidden = true;
+    configLink.hidden = true;
+    document.getElementById("powerDashboard")!.hidden = true;
+    document.querySelector("header.top")!.insertAdjacentHTML(
+      "afterend",
+      `<div class="empty">No supported monitoring dashboard is enabled yet.</div>`,
+    );
+    return;
+  }
+
+  let modalityView: ModalityView = bothEnabled
+    ? "all"
+    : hasPower
+      ? "power"
+      : "water";
+
+  let rates: UtilityRates = {
+    electricityRatePerKWh: getElectricityRatePerKWh(tenantId),
+    waterRatePerGal: getWaterRatePerGal(tenantId),
+  };
+
+  setupThemeToggle(tenantId, () => {
+    void renderChart(summaryRange, modalityView, rates, bothEnabled);
+  });
+
+  if (bothEnabled) {
+    const modalityBar = document.getElementById("modalityBar")!;
+    const modalityToggle = document.getElementById("modalityToggle")!;
+    modalityBar.hidden = false;
+    modalityToggle.addEventListener("click", (e) => {
+      const btn = (e.target as HTMLElement)?.closest(
+        "button[data-modality]",
+      ) as HTMLButtonElement | null;
+      if (!btn) return;
+      const next = btn.dataset.modality as ModalityView | undefined;
+      if (!next || next === modalityView) return;
+      modalityToggle
+        .querySelectorAll("button")
+        .forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      modalityView = next;
+      renderTotals(rooms, rates, summaryRange, modalityView);
+      renderRooms(rooms, rates, summaryRange, modalityView);
+      void renderChart(summaryRange, modalityView, rates, bothEnabled);
+    });
+  }
+
   // Room cards first (one server-side pass), chart loads separately so the
   // page feels responsive even when readings.jsonl is large.
-  const todayFrom = new Date();
-  todayFrom.setHours(0, 0, 0, 0);
+  const todayFrom = startOfTodayLocal().toISOString();
   const { rooms } = await jget<{ rooms: RoomSummary[] }>(
-    `/api/rooms?todayFrom=${encodeURIComponent(todayFrom.toISOString())}`,
+    `/api/tenants/${encodeURIComponent(tenantId)}/rooms?todayFrom=${encodeURIComponent(todayFrom)}`,
   );
-  let summaryRange: SummaryRange = "7d";
-  let rate = setupRateControl(rooms, () => summaryRange);
-  renderTotals(rooms, rate, summaryRange);
-  renderRooms(rooms, rate, summaryRange);
+
+  rates = setupRateControls(tenant.modalities, (nextRates) => {
+    rates = nextRates;
+    renderTotals(rooms, rates, summaryRange, modalityView);
+    renderRooms(rooms, rates, summaryRange, modalityView);
+    void renderChart(summaryRange, modalityView, rates, bothEnabled);
+  });
+
+  renderTotals(rooms, rates, summaryRange, modalityView);
+  renderRooms(rooms, rates, summaryRange, modalityView);
   attachRoomActions();
   attachStatsCarousel();
+  attachChartLegend();
 
-  void renderChart(summaryRange).catch((err) => {
+  void renderChart(summaryRange, modalityView, rates, bothEnabled, true).catch((err) => {
     console.error("chart failed:", err);
     document.getElementById("totalChart")?.parentElement?.insertAdjacentHTML(
       "afterend",
@@ -397,10 +816,13 @@ async function main(): Promise<void> {
     toggle.querySelectorAll("button").forEach((b) => b.classList.remove("active"));
     t.classList.add("active");
     summaryRange = t.dataset.summaryRange as SummaryRange;
-    rate = getElectricityRatePerKWh();
-    renderTotals(rooms, rate, summaryRange);
-    renderRooms(rooms, rate, summaryRange);
-    await renderChart(summaryRange);
+    rates = {
+      electricityRatePerKWh: getElectricityRatePerKWh(tenantId),
+      waterRatePerGal: getWaterRatePerGal(tenantId),
+    };
+    renderTotals(rooms, rates, summaryRange, modalityView);
+    renderRooms(rooms, rates, summaryRange, modalityView);
+    await renderChart(summaryRange, modalityView, rates, bothEnabled, true);
   });
 }
 

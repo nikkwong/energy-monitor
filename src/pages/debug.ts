@@ -1,10 +1,11 @@
-import { jget } from "./common.ts";
+import { jget, setupThemeToggle } from "./common.ts";
 
 type TrafficEntry = {
   id: number;
   at: string;
   method: string;
   path: string;
+  tenantId?: string;
   roomId?: string;
   monitorId?: string;
   status: number;
@@ -139,6 +140,7 @@ function trafficRowHtml(e: TrafficEntry): string {
       <span class="muted">${escapeHtml(e.message)}</span>
     </div>
     <div class="debug-row-grid">
+      <div><span class="muted">tenant:</span> ${escapeHtml(e.tenantId ?? "n/a")}</div>
       <div><span class="muted">room:</span> ${escapeHtml(e.roomId ?? "n/a")}</div>
       <div><span class="muted">monitor:</span> ${escapeHtml(e.monitorId ?? "n/a")}</div>
       <div><span class="muted">ip:</span> ${escapeHtml(e.remoteIp ?? norm?.ip ?? "n/a")}</div>
@@ -202,7 +204,7 @@ function renderTraffic(entries: TrafficEntry[]): void {
       ? `No ingest traffic for room <code>${escapeHtml(selectedRoom)}</code>.`
       : `No ingest traffic seen since this server process started.
         <br />
-        Try POSTing to <code>/api/ingest/&lt;roomId&gt;/&lt;monitorId&gt;</code>.`;
+        Try POSTing to <code>/api/tenants/&lt;tenantId&gt;/ingest/&lt;roomId&gt;/&lt;monitorId&gt;</code>.`;
     el.replaceChildren(empty);
     return;
   }
@@ -252,6 +254,8 @@ document.getElementById("roomFilter")!.addEventListener("change", (event) => {
   renderStats(visible);
   renderTraffic(visible);
 });
+
+setupThemeToggle();
 
 void refresh();
 setInterval(() => {

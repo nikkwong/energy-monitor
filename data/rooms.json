@@ -1,14 +1,3 @@
 {
-  "rooms": {
-    "301": {
-      "label": "Room 301",
-      "monitors": {
-        "south": {
-          "label": "south",
-          "ip": "192.168.1.20"
-        }
-      },
-      "leases": []
-    }
-  }
+  "rooms": {}
 }
