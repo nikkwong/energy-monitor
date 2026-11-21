@@ -104,6 +104,8 @@ route handler.**
 - `DELETE /api/tenants/:tenantId/rooms/:roomId`
 - `POST|GET /api/tenants/:tenantId/ingest/:roomId/:monitorId`
 - `POST|GET /api/tenants/:tenantId/ingest/:roomId` — shorthand for `monitor=default`
+- `POST|GET /api/ingest/:roomId/:monitorId` — legacy compatibility alias for `defaultTenantId` (`5214`)
+- `POST|GET /api/ingest/:roomId` — legacy single-monitor compatibility alias for `defaultTenantId` (`5214`)
 - `GET /api/health`
 
 Page routes are static HTML bundles; the client confirms tenant and room

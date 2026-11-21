@@ -190,18 +190,18 @@ function renderTotals(
     el.innerHTML = `
       <div class="card">
         <div class="label">${rangeLabel(range)}</div>
-        <div class="value tabular">${fmtGal(rangeWater)}<span class="unit">gal</span></div>
+        <div class="value tabular text-water">${fmtGal(rangeWater)}<span class="unit text-water">gal</span></div>
         <div class="cost tabular">${fmtMoney(rangeWaterCost)}</div>
         <div class="sub">across all rooms</div>
       </div>
       <div class="card">
         <div class="label">Right now</div>
-        <div class="value tabular">${fmtGpm(flowTotal)}</div>
-        <div class="sub">${liveWater}/${waterRooms.length} rooms reporting</div>
+        <div class="value tabular text-water">${fmtGpm(flowTotal)}</div>
+        <div class="sub"><span class="text-water">${liveWater}/${waterRooms.length} water</span> reporting</div>
       </div>
       <div class="card">
         <div class="label">Used today</div>
-        <div class="value tabular">${fmtGal(todayWater)}<span class="unit">gal</span></div>
+        <div class="value tabular text-water">${fmtGal(todayWater)}<span class="unit text-water">gal</span></div>
         <div class="cost tabular">${fmtMoney(todayWaterCost)}</div>
         <div class="sub">across all rooms</div>
       </div>
@@ -212,9 +212,9 @@ function renderTotals(
         <div class="label">${rangeLabel(range)}</div>
         <div class="value tabular">${fmtMoney(rangePowerCost + rangeWaterCost)}</div>
         <div class="sub">
-          <span class="inline-utility">${powerIcon}${fmtKWh(rangePowerKWh)} kWh</span>
+          <span class="inline-utility text-power">${powerIcon}${fmtKWh(rangePowerKWh)} kWh</span>
           ·
-          <span class="inline-utility">${waterIcon}${fmtGal(rangeWater)} gal</span>
+          <span class="inline-utility text-water">${waterIcon}${fmtGal(rangeWater)} gal</span>
         </div>
       </div>
       <div class="card">
@@ -222,17 +222,17 @@ function renderTotals(
         <div class="value tabular dual-live-value">
           <span class="inline-utility">${powerIcon}${fmtW(powerTotal)}</span>
           <span class="muted">·</span>
-          <span class="inline-utility">${waterIcon}${fmtGpm(flowTotal)}</span>
+          <span class="inline-utility text-water">${waterIcon}${fmtGpm(flowTotal)}</span>
         </div>
-        <div class="sub">${livePower}/${powerRooms.length} power · ${liveWater}/${waterRooms.length} water reporting</div>
+        <div class="sub">${livePower}/${powerRooms.length} power · <span class="text-water">${liveWater}/${waterRooms.length} water</span> reporting</div>
       </div>
       <div class="card">
         <div class="label">Used today</div>
         <div class="value tabular">${fmtMoney(todayPowerCost + todayWaterCost)}</div>
         <div class="sub">
-          <span class="inline-utility">${powerIcon}${fmtKWh(todayPowerKWh)} kWh</span>
+          <span class="inline-utility text-power">${powerIcon}${fmtKWh(todayPowerKWh)} kWh</span>
           ·
-          <span class="inline-utility">${waterIcon}${fmtGal(todayWater)} gal</span>
+          <span class="inline-utility text-water">${waterIcon}${fmtGal(todayWater)} gal</span>
         </div>
       </div>
     `;
@@ -240,7 +240,7 @@ function renderTotals(
     el.innerHTML = `
       <div class="card">
         <div class="label">${rangeLabel(range)}</div>
-        <div class="value tabular">${fmtKWh(rangePowerKWh)}<span class="unit">kWh</span></div>
+        <div class="value tabular text-power">${fmtKWh(rangePowerKWh)}<span class="unit text-power">kWh</span></div>
         <div class="cost tabular">${fmtMoney(rangePowerCost)}</div>
         <div class="sub">across all rooms</div>
       </div>
@@ -251,7 +251,7 @@ function renderTotals(
       </div>
       <div class="card">
         <div class="label">Used today</div>
-        <div class="value tabular">${fmtKWh(todayPowerKWh)}<span class="unit">kWh</span></div>
+        <div class="value tabular text-power">${fmtKWh(todayPowerKWh)}<span class="unit text-power">kWh</span></div>
         <div class="cost tabular">${fmtMoney(todayPowerCost)}</div>
         <div class="sub">across all rooms</div>
       </div>
@@ -361,21 +361,21 @@ function renderRooms(
       if (showPower && showWater) {
         rowsHtml = `
           <div class="row"><span class="k"><span class="inline-utility">${powerIcon}${rangeLabel(range)}</span></span>
-            <span class="v tabular">${fmtKWh(kwh)} kWh · ${fmtMoney(powerCost)}</span></div>
-          <div class="row"><span class="k"><span class="inline-utility">${waterIcon}${rangeLabel(range)}</span></span>
-            <span class="v tabular">${fmtGal(gal)} gal · ${fmtMoney(waterCost)}</span></div>
+            <span class="v tabular"><span class="text-power">${fmtKWh(kwh)} kWh</span> · ${fmtMoney(powerCost)}</span></div>
+          <div class="row"><span class="k"><span class="inline-utility">${waterIcon}<span class="text-water">${rangeLabel(range)}</span></span></span>
+            <span class="v tabular"><span class="text-water">${fmtGal(gal)} gal</span> · ${fmtMoney(waterCost)}</span></div>
           <div class="row"><span class="k">Now</span>
-            <span class="v tabular"><span class="inline-utility">${powerIcon}${fmtW(r.powerW)}</span> · <span class="inline-utility">${waterIcon}${fmtGpm(r.flowGpm)}</span></span></div>`;
+            <span class="v tabular"><span class="inline-utility">${powerIcon}${fmtW(r.powerW)}</span> · <span class="inline-utility text-water">${waterIcon}${fmtGpm(r.flowGpm)}</span></span></div>`;
       } else if (showWater) {
         rowsHtml = `
-          <div class="row"><span class="k"><span class="inline-utility">${waterIcon}${rangeLabel(range)}</span></span>
-            <span class="v tabular">${fmtGal(gal)} gal · ${fmtMoney(waterCost)}</span></div>
+          <div class="row"><span class="k"><span class="inline-utility">${waterIcon}<span class="text-water">${rangeLabel(range)}</span></span></span>
+            <span class="v tabular"><span class="text-water">${fmtGal(gal)} gal</span> · ${fmtMoney(waterCost)}</span></div>
           <div class="row"><span class="k">Now</span>
-            <span class="v tabular">${fmtGpm(r.flowGpm)}</span></div>`;
+            <span class="v tabular text-water">${fmtGpm(r.flowGpm)}</span></div>`;
       } else if (showPower) {
         rowsHtml = `
           <div class="row"><span class="k"><span class="inline-utility">${powerIcon}${rangeLabel(range)}</span></span>
-            <span class="v tabular">${fmtKWh(kwh)} kWh · ${fmtMoney(powerCost)}</span></div>
+            <span class="v tabular"><span class="text-power">${fmtKWh(kwh)} kWh</span> · ${fmtMoney(powerCost)}</span></div>
           <div class="row"><span class="k">Now</span>
             <span class="v tabular">${fmtW(r.powerW)}</span></div>`;
       } else {
@@ -458,9 +458,9 @@ function setupRateControls(
   const close = document.getElementById("settingsClose") as HTMLButtonElement;
 
   powerInput.value = rates.electricityRatePerKWh.toFixed(4);
-  powerNote.textContent = `Saved in this browser. Default is ${fmtMoney(DEFAULT_ELECTRICITY_RATE_PER_KWH)}/kWh.`;
+  powerNote.innerHTML = `Saved in this browser. Default is <span class="text-power">${fmtMoney(DEFAULT_ELECTRICITY_RATE_PER_KWH)}/kWh</span>.`;
   waterInput.value = rates.waterRatePerGal.toFixed(4);
-  waterNote.textContent = `Saved in this browser. Default is $${DEFAULT_WATER_RATE_PER_GAL.toFixed(4)}/gal.`;
+  waterNote.innerHTML = `Saved in this browser. Default is <span class="text-water">$${DEFAULT_WATER_RATE_PER_GAL.toFixed(4)}/gal</span>.`;
 
   toggle.addEventListener("click", () => {
     dialog.showModal();

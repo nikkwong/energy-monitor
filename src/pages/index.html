@@ -35,7 +35,7 @@
             <div class="rate-input-wrap">
               <span>$</span>
               <input id="electricityRate" type="number" min="0" step="0.0001" inputmode="decimal" />
-              <span>/ kWh</span>
+              <span class="text-power">/ kWh</span>
             </div>
             <div class="rate-note" id="rateNote"></div>
           </div>
@@ -44,7 +44,7 @@
             <div class="rate-input-wrap">
               <span>$</span>
               <input id="waterRate" type="number" min="0" step="0.0001" inputmode="decimal" />
-              <span>/ gal</span>
+              <span class="text-water">/ gal</span>
             </div>
             <div class="rate-note" id="waterRateNote"></div>
           </div>
@@ -59,7 +59,7 @@
             <span class="modality-bar-label">Show</span>
             <div class="range-toggle" id="modalityToggle" role="group" aria-label="Show utilities">
               <button type="button" data-modality="all" class="active">All</button>
-              <button type="button" data-modality="water"><span data-utility-icon="water"></span>Water</button>
+              <button type="button" data-modality="water"><span data-utility-icon="water"></span><span class="text-water">Water</span></button>
               <button type="button" data-modality="power"><span data-utility-icon="power"></span>Power</button>
             </div>
           </div>
@@ -91,7 +91,7 @@
             </button>
             <button type="button" class="chart-legend-item" data-legend-modality="water">
               <span class="chart-legend-swatch water"></span>
-              <span>Water</span>
+              <span class="text-water">Water</span>
             </button>
           </div>
         </div>

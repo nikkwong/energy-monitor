@@ -1,11 +1,99 @@
 {
   "rooms": {
+    "101": {
+      "label": "Room 101",
+      "monitors": {
+        "lights": {
+          "label": "lights",
+          "ip": "192.168.0.13"
+        },
+        "outlet-n": {
+          "label": "outlet-n",
+          "ip": "192.168.0.10"
+        }
+      },
+      "leases": []
+    },
+    "104": {
+      "label": "Room 104",
+      "monitors": {
+        "outlet-s": {
+          "label": "outlet-s",
+          "ip": "192.168.0.14"
+        },
+        "outlet-n": {
+          "label": "outlet-n",
+          "ip": "192.168.0.17"
+        },
+        "outlet-w": {
+          "label": "outlet-w",
+          "ip": "192.168.0.4"
+        }
+      },
+      "leases": []
+    },
+    "205": {
+      "label": "Room 205",
+      "monitors": {
+        "br-e-ba-e-vanity": {
+          "label": "br-e-ba-e-vanity",
+          "ip": "192.168.0.20"
+        },
+        "outlets-n": {
+          "label": "outlets-n",
+          "ip": "192.168.0.19"
+        }
+      },
+      "leases": []
+    },
     "301": {
       "label": "Room 301",
       "monitors": {
         "south": {
           "label": "south",
           "ip": "192.168.1.20"
+        }
+      },
+      "leases": []
+    },
+    "304": {
+      "label": "Room 304",
+      "monitors": {
+        "lights": {
+          "label": "lights",
+          "ip": "192.168.0.18"
+        }
+      },
+      "leases": []
+    },
+    "305": {
+      "label": "Room 305",
+      "monitors": {
+        "outlet-s-w": {
+          "label": "outlet-s-w",
+          "ip": "192.168.0.24"
+        },
+        "lights": {
+          "label": "lights",
+          "ip": "192.168.0.25"
+        },
+        "outlet-n-e": {
+          "label": "outlet-n-e",
+          "ip": "192.168.0.16"
+        }
+      },
+      "leases": []
+    },
+    "B3": {
+      "label": "Room B3",
+      "monitors": {
+        "outlets-s": {
+          "label": "outlets-s",
+          "ip": "192.168.0.26"
+        },
+        "lights": {
+          "label": "lights",
+          "ip": "192.168.0.23"
         }
       },
       "leases": []

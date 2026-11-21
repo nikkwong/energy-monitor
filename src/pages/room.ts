@@ -359,7 +359,7 @@ function renderEditPanel(data: UsageResp): void {
             </div>
           </div>
           <div class="utility-toggle-item">
-            <span class="utility-toggle-label"><span class="inline-utility">${utilityIconHtml("water")}Water</span></span>
+            <span class="utility-toggle-label"><span class="inline-utility">${utilityIconHtml("water")}<span class="text-water">Water</span></span></span>
             <div class="range-toggle utility-seg">
               <button type="button" class="${roomMod.water ? "active" : ""}" data-room-modality="water" data-enabled="true">On</button>
               <button
@@ -924,7 +924,7 @@ function renderStats(data: UsageResp): void {
   const latest = data.latest;
   const cls = freshnessClass(latest?.ts ?? null);
   const ratePerKWh = getElectricityRatePerKWh(tenantId);
-  const rateText = `at ${fmtMoney(ratePerKWh)}/kWh`;
+  const rateText = `at <span class="text-power">${fmtMoney(ratePerKWh)}/kWh</span>`;
 
   // Per-monitor breakdowns only add value once a room has more than one feed.
   const monthIds = visibleMonitorIds(data.room.monitors);
@@ -934,7 +934,7 @@ function renderStats(data: UsageResp): void {
           .sort()
           .map((id) => {
             const kwh = data.monthUsage.monitors[id] ?? 0;
-            return `<span class="muted">${monitorLabelHtml(data.room, id)}:</span> ${fmtKWh(kwh)}`;
+            return `<span class="muted">${monitorLabelHtml(data.room, id)}:</span> <span class="text-power">${fmtKWh(kwh)}</span>`;
           })
           .join(" · ")
       : "";
@@ -945,7 +945,7 @@ function renderStats(data: UsageResp): void {
           .sort()
           .map((id) => {
             const kwh = data.todayUsage.monitors[id] ?? 0;
-            return `<span class="muted">${monitorLabelHtml(data.room, id)}:</span> ${fmtKWh(kwh)}`;
+            return `<span class="muted">${monitorLabelHtml(data.room, id)}:</span> <span class="text-power">${fmtKWh(kwh)}</span>`;
           })
           .join(" · ")
       : "";
@@ -966,7 +966,7 @@ function renderStats(data: UsageResp): void {
   el.innerHTML = `
     <div class="card">
       <div class="label">This month</div>
-      <div class="value tabular">${fmtKWh(data.monthUsage.energyKWh)}<span class="unit">kWh</span></div>
+      <div class="value tabular text-power">${fmtKWh(data.monthUsage.energyKWh)}<span class="unit text-power">kWh</span></div>
       <div class="cost tabular">${fmtMoney(data.monthUsage.energyKWh * ratePerKWh)}</div>
       <div class="sub">${[rateText, monthBreakdown].filter(Boolean).join(" · ") || "&nbsp;"}</div>
     </div>
@@ -980,7 +980,7 @@ function renderStats(data: UsageResp): void {
     </div>
     <div class="card">
       <div class="label">Used today</div>
-      <div class="value tabular">${fmtKWh(data.todayUsage.energyKWh)}<span class="unit">kWh</span></div>
+      <div class="value tabular text-power">${fmtKWh(data.todayUsage.energyKWh)}<span class="unit text-power">kWh</span></div>
       <div class="cost tabular">${fmtMoney(data.todayUsage.energyKWh * ratePerKWh)}</div>
       <div class="sub">${[rateText, todayBreakdown].filter(Boolean).join(" · ") || "&nbsp;"}</div>
     </div>

@@ -109,6 +109,8 @@ I'll extend the picker.
 6. Open the **Console** tab on the script — you should see lines like `POST 200 ok` every minute.
 7. Refresh `/<TENANT_ID>/rooms/<ROOM_ID>` — the "Right now" card should turn green.
 
+> **Backward compatibility during migration**: Existing devices still posting to `/api/ingest/<ROOM_ID>/<MONITOR_ID>` or `/api/ingest/<ROOM_ID>` continue to work alongside `/api/tenants/<TENANT_ID>/ingest/<ROOM_ID>/<MONITOR_ID>` and automatically route into `defaultTenantId` (`5214`).
+
 ### Tips
 
 - **Multiple devices, same room?** Run the script on each, with a distinct

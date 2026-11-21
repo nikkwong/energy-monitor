@@ -271,4 +271,79 @@ describe("tenant registry", () => {
       await rm(tmpDataDir, { recursive: true, force: true });
     }
   });
+
+  test("server accepts both legacy /api/ingest/... and new /api/tenants/:tenantId/ingest/... endpoints", async () => {
+    const tmpDataDir = await mkdtemp(join(tmpdir(), "energy-monitor-dual-ingest-"));
+    const port = 34000 + Math.floor(Math.random() * 1000);
+    const proc = Bun.spawn(["bun", "run", "src/server.ts"], {
+      cwd: process.cwd(),
+      env: { ...process.env, DATA_DIR: tmpDataDir, PORT: String(port), NODE_ENV: "production" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    try {
+      const baseUrl = `http://127.0.0.1:${port}`;
+      // Wait for health endpoint.
+      for (let i = 0; i < 40; i++) {
+        try {
+          const res = await fetch(`${baseUrl}/api/health`);
+          if (res.ok) break;
+        } catch {
+          // wait
+        }
+        await Bun.sleep(50);
+      }
+
+      const payload1 = {
+        method: "NotifyStatus",
+        params: {
+          ts: 1763726400,
+          "em1:0": { act_power: 120 },
+          "em1data:0": { total_act_energy: 1000 },
+        },
+      };
+      const payload2 = {
+        method: "NotifyStatus",
+        params: {
+          ts: 1763726460,
+          "em1:0": { act_power: 150 },
+          "em1data:0": { total_act_energy: 1250 },
+        },
+      };
+
+      // 1. Legacy endpoint -> routes to defaultTenantId ("5214")
+      const legacyRes = await fetch(`${baseUrl}/api/ingest/101/lights`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload1),
+      });
+      expect(legacyRes.status).toBe(200);
+      expect(await legacyRes.json()).toEqual({ ok: true });
+
+      // 2. New tenant-scoped endpoint -> writes to the same room/monitor counter stream
+      const tenantRes = await fetch(`${baseUrl}/api/tenants/5214/ingest/101/lights`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload2),
+      });
+      expect(tenantRes.status).toBe(200);
+      expect(await tenantRes.json()).toEqual({ ok: true });
+
+      // Verify usage delta (1250 - 1000 = 250 Wh = 0.25 kWh) shows up under tenant 5214.
+      const usageRes = await fetch(
+        `${baseUrl}/api/tenants/5214/rooms/101/usage?to=2026-11-21T13:00:00Z`,
+      );
+      expect(usageRes.status).toBe(200);
+      const usage = (await usageRes.json()) as {
+        leaseUsage: { energyKWh: number };
+        latest: { monitors: Record<string, { totalEnergyWh: number }> };
+      };
+      expect(usage.leaseUsage.energyKWh).toBeCloseTo(0.25, 5);
+      expect(usage.latest.monitors["lights"]?.totalEnergyWh).toBe(1250);
+    } finally {
+      proc.kill();
+      await proc.exited;
+      await rm(tmpDataDir, { recursive: true, force: true });
+    }
+  });
 });

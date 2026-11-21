@@ -30,6 +30,8 @@
   --chart-power-fill: rgba(250, 204, 21, 0.15);
   --chart-water: #7dd3fc;
   --chart-water-fill: rgba(125, 211, 252, 0.15);
+  --text-power: #fef08a;
+  --text-water: #bae6fd;
   --radius: 12px;
   --shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 8px 24px rgba(0, 0, 0, 0.35);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", Roboto,
@@ -68,6 +70,8 @@
   --chart-power-fill: rgba(234, 179, 8, 0.14);
   --chart-water: #0284c7;
   --chart-water-fill: rgba(2, 132, 199, 0.12);
+  --text-power: #a16207;
+  --text-water: #0369a1;
   --shadow: 0 1px 0 rgba(255, 255, 255, 0.8) inset, 0 4px 16px rgba(15, 23, 42, 0.08);
 }
 
@@ -606,6 +610,7 @@ header.top .crumbs a:hover {
 }
 
 .lease-kwh {
+  color: var(--text-power);
   font-size: 14px;
   font-weight: 600;
   white-space: nowrap;
@@ -685,6 +690,7 @@ header.top .crumbs a:hover {
 }
 
 .bill-kwh {
+  color: var(--text-power);
   font-size: 14px;
   font-weight: 600;
   white-space: nowrap;
@@ -1102,6 +1108,14 @@ a.card.room:hover .card-delete {
   font-weight: 500;
 }
 
+.card .value .unit.text-power {
+  color: var(--text-power);
+}
+
+.card .value .unit.text-water {
+  color: var(--text-water);
+}
+
 .card .cost {
   margin-top: 2px;
   color: var(--good);
@@ -1321,6 +1335,14 @@ a.card.room:hover .card-delete {
 
 .muted {
   color: var(--text-dim);
+}
+
+.text-power {
+  color: var(--text-power);
+}
+
+.text-water {
+  color: var(--text-water);
 }
 
 .tabular {

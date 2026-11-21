@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import { statSync } from "node:fs";
 import { resolve } from "node:path";
 import type { DailyRollup, Reading } from "./types.ts";
 import { DATA_DIR, TENANT_ID_RE } from "./tenants.ts";
@@ -257,21 +258,53 @@ export class HourlyStore {
   }
 }
 
-const storesByTenant = new Map<string, HourlyStore>();
+const storesByTenant = new Map<string, { store: HourlyStore; ino: number }>();
+
+function fileIno(path: string): number | null {
+  try {
+    const st = statSync(path);
+    return st.size > 0 ? st.ino : null;
+  } catch {
+    return null;
+  }
+}
 
 export function hourlyStore(tenantId: string): HourlyStore {
-  let store = storesByTenant.get(tenantId);
-  if (!store) {
-    store = new HourlyStore(hourlyDbPathForTenant(tenantId), { wal: true });
-    storesByTenant.set(tenantId, store);
+  const dbPath = hourlyDbPathForTenant(tenantId);
+  const currentIno = fileIno(dbPath);
+  const cached = storesByTenant.get(tenantId);
+  if (cached && currentIno !== null && cached.ino === currentIno) {
+    return cached.store;
   }
+  if (cached) {
+    try {
+      cached.store.close();
+    } catch {
+      // ignore close errors on replaced/unlinked db
+    }
+    storesByTenant.delete(tenantId);
+  }
+  const store = new HourlyStore(dbPath, { wal: true });
+  const openedIno = fileIno(dbPath) ?? -1;
+  storesByTenant.set(tenantId, { store, ino: openedIno });
   return store;
 }
 
 export function hourlyStoreReady(tenantId: string): boolean {
   const dbPath = hourlyDbPathForTenant(tenantId);
-  // Avoid creating an empty SQLite file on disk for tenants that have never built an index.
-  if (!storesByTenant.has(tenantId) && !Bun.file(dbPath).size) {
+  // Avoid creating an empty SQLite file on disk for tenants that have never built an index,
+  // and drop any stale handle if the file was removed on disk.
+  const currentIno = fileIno(dbPath);
+  if (currentIno === null) {
+    const cached = storesByTenant.get(tenantId);
+    if (cached) {
+      try {
+        cached.store.close();
+      } catch {
+        // ignore
+      }
+      storesByTenant.delete(tenantId);
+    }
     return false;
   }
   return hourlyStore(tenantId).isReady();

@@ -109,6 +109,12 @@ export function chartAxisAndTooltipOptions(cfg?: ChartAxisAndTooltipConfig): {
   const tooltipBorder = themeCssVar("--border");
   const tooltipText = themeCssVar("--text");
   const yAxisLabel = cfg?.yAxisLabel ?? "kWh";
+  const yTitleColor =
+    yAxisLabel === "kWh"
+      ? themeCssVar("--text-power") || ticks
+      : yAxisLabel === "gal"
+        ? themeCssVar("--text-water") || ticks
+        : ticks;
   const showLegend = cfg?.showLegend ?? false;
   return {
     plugins: {
@@ -142,7 +148,7 @@ export function chartAxisAndTooltipOptions(cfg?: ChartAxisAndTooltipConfig): {
           ? { color: ticks, callback: cfg.yTickCallback }
           : { color: ticks },
         beginAtZero: true,
-        title: { display: true, text: yAxisLabel, color: ticks },
+        title: { display: true, text: yAxisLabel, color: yTitleColor },
       },
     },
   };
